@@ -91,6 +91,37 @@ describe('AliasesPage', () => {
     expect(await screen.findByText(/暂无账号/)).toBeInTheDocument()
   })
 
+  it('别名先筛选排序再分页，搜索会回到第一页', async () => {
+    const manyAliases: Alias[] = Array.from({ length: 12 }, (_, index) => ({
+      email: `alias-${String(index + 1).padStart(2, '0')}@icloud.com`,
+      anonymousId: `anon_${index + 1}`,
+      label: index === 0 ? '唯一标签' : `标签 ${index + 1}`,
+      active: index % 2 === 0,
+      createdAt: `2026-07-${String(index + 1).padStart(2, '0')}T00:00:00+08:00`,
+    }))
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () => HttpResponse.json({
+        success: true,
+        data: { account_id: 'acc_1', count: manyAliases.length, aliases: manyAliases },
+      })),
+    )
+
+    renderPage()
+    expect(await screen.findByText('alias-12@icloud.com')).toBeInTheDocument()
+    expect(screen.getByText('第 1-10 项，共 12 项')).toBeInTheDocument()
+    expect(screen.queryByText('alias-01@icloud.com')).not.toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getByText('alias-01@icloud.com')).toBeInTheDocument()
+
+    await user.type(screen.getByLabelText('搜索'), '唯一标签')
+    expect(screen.getByText('alias-01@icloud.com')).toBeInTheDocument()
+    expect(screen.getByText('第 1-1 项，共 1 项')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '第 1 页' })).toHaveAttribute('aria-current', 'page')
+  })
+
   it('账号切换:URL query 优先,回退到第一个账号', async () => {
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),

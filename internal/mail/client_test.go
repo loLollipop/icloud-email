@@ -17,6 +17,29 @@ import (
 	"time"
 )
 
+func TestMessageWithinDaysAcceptsRFC3339AndFiltersOldMail(t *testing.T) {
+	now := time.Date(2026, time.October, 3, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		raw  string
+		days int
+		want bool
+	}{
+		{name: "recent RFC3339", raw: now.Add(-23 * time.Hour).Format(time.RFC3339), days: 1, want: true},
+		{name: "old RFC3339", raw: now.Add(-25 * time.Hour).Format(time.RFC3339), days: 1, want: false},
+		{name: "legacy RFC1123Z", raw: now.Add(-23 * time.Hour).Format(time.RFC1123Z), days: 1, want: true},
+		{name: "unlimited", raw: now.Add(-365 * 24 * time.Hour).Format(time.RFC3339), days: 0, want: true},
+		{name: "unknown date retained", raw: "not-a-date", days: 1, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := messageWithinDays(tt.raw, tt.days, now); got != tt.want {
+				t.Fatalf("messageWithinDays(%q, %d) = %v, want %v", tt.raw, tt.days, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClientConnectTimesOutWaitingForGreeting(t *testing.T) {
 	useIMAPTimeouts(t, 100*time.Millisecond, 100*time.Millisecond)
 	ln, serverTLS, clientTLS := newTestTLSListener(t)

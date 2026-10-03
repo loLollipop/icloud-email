@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary } from '../api/types'
@@ -18,6 +18,7 @@ import AppPasswordDialog from '../components/AppPasswordDialog'
 import ProxyDialog from '../components/ProxyDialog'
 import MailboxDialog from '../components/MailboxDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
+import Pagination from '../components/Pagination'
 import { useToast } from '../components/ToastProvider'
 import {
   IconCheck,
@@ -78,8 +79,17 @@ export default function AccountsPage() {
   const [mailboxFor, setMailboxFor] = useState<AccountSummary | null>(null)
   const [deleteFor, setDeleteFor] = useState<AccountSummary | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   const { show } = useToast()
+
+  const totalPages = Math.max(1, Math.ceil(accounts.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const visibleAccounts = useMemo(
+    () => accounts.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [accounts, currentPage, pageSize],
+  )
 
   const load = useCallback(async () => {
     const generation = ++requestGeneration.current
@@ -191,7 +201,7 @@ export default function AccountsPage() {
               </tr>
             </thead>
             <tbody>
-              {accounts.map((acc) => (
+              {visibleAccounts.map((acc) => (
                 <tr key={acc.id}>
                   <td>
                     {acc.name}
@@ -245,6 +255,17 @@ export default function AccountsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={currentPage}
+          pageSize={pageSize}
+          totalItems={accounts.length}
+          onPageChange={setPage}
+          onPageSizeChange={(nextPageSize) => {
+            setPageSize(nextPageSize)
+            setPage(1)
+          }}
+          label="账号列表分页"
+        />
       </AsyncState>
 
       <AccountFormDialog

@@ -12,6 +12,7 @@ import {
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
+import Pagination from '../components/Pagination'
 import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
 import {
@@ -19,6 +20,7 @@ import {
   IconChevronDown,
   IconChevronUp,
   IconClock,
+  IconCopy,
   IconInbox,
   IconPlus,
   IconSearch,
@@ -91,6 +93,8 @@ export default function AliasesPage() {
   } | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
 
   const { show, showCopyable } = useToast()
 
@@ -194,6 +198,18 @@ export default function AliasesPage() {
       .map(({ alias }) => alias)
   }, [aliases, search, filter, sortDirection])
 
+  const stats = useMemo(() => ({
+    total: aliases.length,
+    active: aliases.filter((item) => item.active).length,
+    inactive: aliases.filter((item) => !item.active).length,
+  }), [aliases])
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const visibleAliases = useMemo(
+    () => filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [filtered, currentPage, pageSize],
+  )
+
   function handleRetry() {
     if (accountId) invalidateResource(resourceKeys.aliases(accountId))
     setAliasesLoading(true)
@@ -274,7 +290,14 @@ export default function AliasesPage() {
           <h2>别名管理</h2>
           <p>创建、停用、激活或删除 Hide My Email 别名</p>
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId}>
+            <IconPlus size={16} />
+            创建别名
+          </button>
+      </div>
+
+      <div className="alias-toolbar card">
+        <div className="toolbar-field">
           <label htmlFor="alias-account">账号</label>
           <select
             id="alias-account"
@@ -285,65 +308,49 @@ export default function AliasesPage() {
               setAliases(cached?.data.aliases ?? [])
               setAliasesLoading(!cached)
               setError('')
+              setPage(1)
               setAccountId(e.target.value)
               setSearchParams({ account_id: e.target.value }, { replace: true })
             }}
-            style={{ width: 'auto' }}
           >
             {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
+              <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
-          <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId}>
-            <IconPlus size={16} />
-            创建别名
-          </button>
         </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 200 }}>
+        <div className="toolbar-field toolbar-field-search">
           <label htmlFor="alias-search">搜索</label>
-          <div style={{ position: 'relative' }}>
+          <div className="search-input-wrap">
             <input
               id="alias-search"
               type="search"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
               placeholder="按邮箱或标签搜索"
-              style={{ paddingRight: 36 }}
             />
-            <span
-              aria-hidden="true"
-              style={{
-                position: 'absolute',
-                right: 10,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                color: 'var(--color-text-tertiary)',
-                display: 'flex',
-                pointerEvents: 'none',
-              }}
-            >
+            <span aria-hidden="true" className="search-input-icon">
               <IconSearch size={16} />
             </span>
           </div>
         </div>
-        <div>
+        <div className="toolbar-field">
           <label htmlFor="alias-filter">状态</label>
           <select
             id="alias-filter"
             value={filter}
-            onChange={(e) => setFilter(e.target.value as 'all' | 'active' | 'inactive')}
-            style={{ width: 'auto' }}
+            onChange={(e) => { setFilter(e.target.value as 'all' | 'active' | 'inactive'); setPage(1) }}
           >
             <option value="all">全部</option>
             <option value="active">已启用</option>
             <option value="inactive">已停用</option>
           </select>
         </div>
+      </div>
+
+      <div className="alias-stats" aria-label="别名统计">
+        <span>全部 <strong>{stats.total}</strong></span>
+        <span>启用 <strong>{stats.active}</strong></span>
+        <span>停用 <strong>{stats.inactive}</strong></span>
       </div>
 
       <AsyncState
@@ -376,7 +383,7 @@ export default function AliasesPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((alias) => (
+              {visibleAliases.map((alias) => (
                 <tr key={alias.anonymousId}>
                   <td>
                     <button
@@ -385,6 +392,7 @@ export default function AliasesPage() {
                       onClick={() => void copyEmail(alias.email)}
                       title="复制邮箱"
                     >
+                      <IconCopy size={14} />
                       {alias.email}
                     </button>
                   </td>
@@ -435,6 +443,14 @@ export default function AliasesPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={currentPage}
+          pageSize={pageSize}
+          totalItems={filtered.length}
+          onPageChange={setPage}
+          onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }}
+          label="别名列表分页"
+        />
       </AsyncState>
 
       <CreateAliasDialog
@@ -469,7 +485,7 @@ export default function AliasesPage() {
       )}
 
       {actionError && (
-        <div className="alert-error" role="alert" style={{ marginTop: 16 }}>
+        <div className="alert-error alias-action-error" role="alert">
           {actionError}
         </div>
       )}

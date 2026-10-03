@@ -239,13 +239,9 @@ func (c *Client) ListInbox(limit int, days int) ([]Message, error) {
 	var out []Message
 	for msg := range messages {
 		m := toMessageWithBody(msg)
-		// days 过滤
-		if days > 0 {
-			if t, err := time.Parse(time.RFC1123Z, m.Date); err == nil {
-				if time.Since(t) > time.Duration(days)*24*time.Hour {
-					continue
-				}
-			}
+		// toMessageWithBody 统一输出 RFC3339；同时兼容历史或上游返回的 RFC1123 日期。
+		if !messageWithinDays(m.Date, days, time.Now()) {
+			continue
 		}
 		out = append(out, m)
 	}
@@ -254,6 +250,25 @@ func (c *Client) ListInbox(limit int, days int) ([]Message, error) {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Date > out[j].Date })
 	return out, nil
+}
+
+func messageWithinDays(raw string, days int, now time.Time) bool {
+	if days <= 0 {
+		return true
+	}
+	var parsed time.Time
+	var err error
+	for _, layout := range []string{time.RFC3339, time.RFC1123Z, time.RFC1123} {
+		parsed, err = time.Parse(layout, raw)
+		if err == nil {
+			break
+		}
+	}
+	// 日期未知时保留邮件，避免因异常上游格式静默丢信。
+	if err != nil {
+		return true
+	}
+	return !parsed.Before(now.Add(-time.Duration(days) * 24 * time.Hour))
 }
 
 // FindByRecipient 查找发给指定隐私邮箱别名的最近 limit 封邮件(新→旧)。

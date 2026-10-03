@@ -90,6 +90,28 @@ describe('AccountsPage', () => {
     expect(screen.queryByText(/cookie-secret|app-secret|proxy-secret/)).toBeNull()
   })
 
+  it('账号列表分页可前后切换并显示准确范围', async () => {
+    const manyAccounts = Array.from({ length: 11 }, (_, index) => ({
+      ...accounts[0],
+      id: `acc_${index + 1}`,
+      name: `账号 ${index + 1}`,
+      icloud_email: `account-${index + 1}@icloud.com`,
+    }))
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: manyAccounts })),
+    )
+
+    renderPage()
+    expect(await screen.findByText('账号 1')).toBeInTheDocument()
+    expect(screen.getByText('第 1-10 项，共 11 项')).toBeInTheDocument()
+    expect(screen.queryByText('账号 11')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getByText('账号 11')).toBeInTheDocument()
+    expect(screen.queryByText('账号 1')).not.toBeInTheDocument()
+    expect(screen.getByText('第 11-11 项，共 11 项')).toBeInTheDocument()
+  })
+
   it('添加账号:校验必填、请求期间禁用、成功刷新', async () => {
     let listData = accounts
     server.use(
