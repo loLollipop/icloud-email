@@ -67,6 +67,9 @@ export interface InboxResult {
   account_id: string
   alias?: string
   count: number
+  total: number
+  page: number
+  page_size: number
   messages: InboxMessage[]
   method: 'imap' | 'web_api'
 }

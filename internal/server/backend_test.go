@@ -342,6 +342,58 @@ func TestListInboxHandlerScopesAllAliasesIncludingInactive(t *testing.T) {
 	}
 }
 
+func TestListInboxHandlerSearchPaginationDefaultsToFullHistory(t *testing.T) {
+	fake := &fakeBackend{
+		aliases: []hme.Alias{{Email: "alias@icloud.com", Active: false}},
+		inbox:   InboxResult{Messages: []mail.Message{}, Total: 0, Page: 1, PageSize: 20, Method: "imap"},
+	}
+	_, ts := newTestServer(fake)
+	defer ts.Close()
+
+	status, body := authedInboxRequest(t, ts, "/api/inbox?account_id=acc_1&page=3&q=%20%20hello%20world%20%20&field=body&limit=bogus")
+	if status != http.StatusOK {
+		t.Fatalf("response = %d %s, want 200", status, body)
+	}
+	q := fake.listInboxQuery
+	if q.Page != 3 || q.PageSize != 20 || q.Search != "hello world" || q.SearchField != "body" {
+		t.Fatalf("query = %#v, want normalized search pagination", q)
+	}
+	if q.Days != 0 || q.Limit != 0 {
+		t.Fatalf("query window = limit %d days %d, want full history", q.Limit, q.Days)
+	}
+}
+
+func TestListInboxHandlerValidatesSearchPagination(t *testing.T) {
+	longQuery := strings.Repeat("界", 257)
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "page missing value", query: "page="},
+		{name: "page zero", query: "page=0"},
+		{name: "page too large", query: "page=1000001"},
+		{name: "page size zero", query: "page=1&page_size=0"},
+		{name: "page size too large", query: "page=1&page_size=101"},
+		{name: "unknown field", query: "page=1&field=date"},
+		{name: "query too long", query: "page=1&q=" + longQuery},
+		{name: "explicit invalid days", query: "page=1&days=0"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeBackend{aliases: []hme.Alias{{Email: "alias@icloud.com"}}}
+			_, ts := newTestServer(fake)
+			defer ts.Close()
+			status, body := authedInboxRequest(t, ts, "/api/inbox?account_id=acc_1&"+tt.query)
+			if status != http.StatusBadRequest || !strings.Contains(body, "VALIDATION_ERROR") {
+				t.Fatalf("response = %d %s, want 400 VALIDATION_ERROR", status, body)
+			}
+			if fake.listInboxCalls != 0 {
+				t.Fatalf("ListInbox calls = %d, want 0", fake.listInboxCalls)
+			}
+		})
+	}
+}
+
 func TestListInboxHandlerRejectsUnknownAliasWithoutBackendRead(t *testing.T) {
 	fake := &fakeBackend{aliases: []hme.Alias{{Email: "known@icloud.com", Active: true}}}
 	_, ts := newTestServer(fake)

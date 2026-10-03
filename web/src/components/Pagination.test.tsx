@@ -23,4 +23,12 @@ describe('Pagination', () => {
     expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
   })
+
+  it('很多页保留首尾页并限制按钮数量，最后一页禁用下一页', () => {
+    render(<Pagination page={100} pageSize={10} totalItems={1000} onPageChange={() => undefined} onPageSizeChange={() => undefined} />)
+    expect(screen.getByRole('button', { name: '第 1 页' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '第 100 页' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getAllByRole('button')).toHaveLength(7)
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
+  })
 })

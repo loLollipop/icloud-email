@@ -210,15 +210,51 @@ func (s *Server) listInboxHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: scope 必须为 hme_aliases")
 		return
 	}
-	limit, err := parseInboxInt(c.DefaultQuery("limit", "20"), 1, 100)
-	if err != nil {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: limit 需为 1-100 的整数")
-		return
-	}
-	days, err := parseInboxInt(c.DefaultQuery("days", "7"), 1, 90)
-	if err != nil {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: days 需为 1-90 的整数")
-		return
+	var limit, days, page, pageSize int
+	var err error
+	var search, searchField string
+	pageRaw, paged := c.GetQuery("page")
+	if paged {
+		page, err = parseInboxInt(pageRaw, 1, 1_000_000)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: page 需为 1-1000000 的整数")
+			return
+		}
+		pageSize, err = parseInboxInt(c.DefaultQuery("page_size", "20"), 1, 100)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: page_size 需为 1-100 的整数")
+			return
+		}
+		search = strings.TrimSpace(c.Query("q"))
+		if len([]rune(search)) > 256 {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: q 最长 256 字符")
+			return
+		}
+		searchField = strings.ToLower(strings.TrimSpace(c.DefaultQuery("field", "all")))
+		switch searchField {
+		case "all", "subject", "from", "to", "body":
+		default:
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: field 需为 all, subject, from, to 或 body")
+			return
+		}
+		if daysRaw, exists := c.GetQuery("days"); exists {
+			days, err = parseInboxInt(daysRaw, 1, 90)
+			if err != nil {
+				failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: days 需为 1-90 的整数")
+				return
+			}
+		}
+	} else {
+		limit, err = parseInboxInt(c.DefaultQuery("limit", "20"), 1, 100)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: limit 需为 1-100 的整数")
+			return
+		}
+		days, err = parseInboxInt(c.DefaultQuery("days", "7"), 1, 90)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: days 需为 1-90 的整数")
+			return
+		}
 	}
 
 	aliases, err := s.accountAliases(accountID)
@@ -248,11 +284,15 @@ func (s *Server) listInboxHandler(c *gin.Context) {
 	}
 
 	result, err := s.be.ListInbox(InboxQuery{
-		AccountID:  accountID,
-		Alias:      alias,
-		Recipients: recipients,
-		Limit:      limit,
-		Days:       days,
+		AccountID:   accountID,
+		Alias:       alias,
+		Recipients:  recipients,
+		Limit:       limit,
+		Days:        days,
+		Page:        page,
+		PageSize:    pageSize,
+		Search:      search,
+		SearchField: searchField,
 	})
 	if err != nil {
 		backendFail(c, err)

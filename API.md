@@ -248,14 +248,18 @@ X-CSRF-Token: <token>
 ### 13. 读取邮件
 
 ```http
-GET /api/inbox?account_id=acc_1&scope=hme_aliases&alias=xyz123@icloud.com&limit=20&days=7
+GET /api/inbox?account_id=acc_1&scope=hme_aliases&page=1&page_size=20&q=verify&field=all
 ```
 
 - `account_id` 必填
 - `scope` 建议显式传 `hme_aliases`；缺省时服务端仍采用相同的安全范围
 - `alias` 可选；传入时只返回发给该账号所属别名的邮件，不传时返回该账号全部 iCloud 隐私别名（包括已停用但仍存在的别名）的邮件并集
-- `limit` 1–100（默认 20）
-- `days` 1–90（默认 7）；非法整数直接 `400 VALIDATION_ERROR`
+- 显式传 `page` 时启用全收件箱搜索分页：`page` 为 1–1000000，超出总页数时钳制到最后一页（空结果为第 1 页）
+- `page_size` 1–100（默认 20）
+- `q` 可选，首尾空白会被移除，最长 256 个 Unicode 字符
+- `field` 默认 `all`，可选 `all` / `subject` / `from` / `to` / `body`
+- 分页模式不传 `days` 即搜索全部历史邮件，不受 7/30/90 天或旧加载数量窗口限制；`limit` 在该模式下忽略
+- 不传 `page` 时保留旧模式：`limit` 1–100（默认 20），`days` 1–90（默认 7）
 
 **响应（IMAP 精确按收件人筛选）：**
 
@@ -266,6 +270,9 @@ GET /api/inbox?account_id=acc_1&scope=hme_aliases&alias=xyz123@icloud.com&limit=
     "account_id": "acc_1",
     "alias": "xyz123@icloud.com",
     "count": 2,
+    "total": 2,
+    "page": 1,
+    "page_size": 20,
     "method": "imap",
     "messages": [
       {
@@ -280,6 +287,8 @@ GET /api/inbox?account_id=acc_1&scope=hme_aliases&alias=xyz123@icloud.com&limit=
   }
 }
 ```
+
+分页模式先执行 IMAP `UID SEARCH`，再用所有候选邮件的原始 IMAP Envelope 精确复验收件人，因此 `total` 是全局精确匹配数，`count` 是当前页 `messages` 数量。只有当前页会下载正文用于生成预览。
 
 生产后端仅返回服务端按已验证 HME 别名集合过滤的 IMAP 结果。无法安全筛选时返回 `503 HME_FILTER_UNAVAILABLE`，不会回退读取 Web API 或未过滤的原始收件箱。未知或不属于该账号的 `alias` 返回 `400 VALIDATION_ERROR`。
 

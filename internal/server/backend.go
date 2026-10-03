@@ -25,11 +25,15 @@ func (e *BackendError) Error() string { return e.Message }
 
 // InboxQuery 是收件箱查询参数。
 type InboxQuery struct {
-	AccountID  string
-	Alias      string
-	Recipients []string
-	Limit      int
-	Days       int
+	AccountID   string
+	Alias       string
+	Recipients  []string
+	Limit       int
+	Days        int
+	Page        int
+	PageSize    int
+	Search      string
+	SearchField string
 }
 
 // InboxResult 是收件箱查询结果。
@@ -37,6 +41,9 @@ type InboxResult struct {
 	AccountID string         `json:"account_id"`
 	Alias     string         `json:"alias,omitempty"`
 	Count     int            `json:"count"`
+	Total     int            `json:"total"`
+	Page      int            `json:"page"`
+	PageSize  int            `json:"page_size"`
 	Messages  []mail.Message `json:"messages"`
 	Method    string         `json:"method"`
 }
@@ -278,25 +285,57 @@ func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
 // ListInbox reads only messages addressed to the handler-verified HME aliases.
 func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 	if len(q.Recipients) == 0 {
-		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Messages: []mail.Message{}, Method: "imap"}, nil
+		page, pageSize := inboxResultPage(q)
+		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Messages: []mail.Message{}, Method: "imap", Page: page, PageSize: pageSize}, nil
 	}
 
 	var imapMessages []mail.Message
+	var searchResult mail.SearchResult
 	poolErr := b.mgr.WithMailClient(q.AccountID, func(mc *mail.Client) error {
 		var err error
-		imapMessages, err = mc.FindByRecipients(q.Recipients, q.Limit, q.Days)
+		if q.Page > 0 {
+			searchResult, err = mc.SearchByRecipients(q.Recipients, q.Page, q.PageSize, q.Search, q.SearchField, q.Days)
+		} else {
+			imapMessages, err = mc.FindByRecipients(q.Recipients, q.Limit, q.Days)
+		}
 		return err
 	})
 	if poolErr == nil {
+		if q.Page > 0 {
+			return InboxResult{
+				AccountID: q.AccountID,
+				Alias:     q.Alias,
+				Count:     len(searchResult.Messages),
+				Total:     searchResult.Total,
+				Page:      searchResult.Page,
+				PageSize:  searchResult.PageSize,
+				Messages:  searchResult.Messages,
+				Method:    "imap",
+			}, nil
+		}
 		return InboxResult{
 			AccountID: q.AccountID,
 			Alias:     q.Alias,
 			Count:     len(imapMessages),
+			Total:     len(imapMessages),
+			Page:      1,
+			PageSize:  q.Limit,
 			Messages:  imapMessages,
 			Method:    "imap",
 		}, nil
 	}
 	return InboxResult{}, &BackendError{Status: http.StatusServiceUnavailable, Code: "HME_FILTER_UNAVAILABLE", Message: "隐私别名邮件筛选暂不可用，请配置或检查 IMAP"}
+}
+
+func inboxResultPage(q InboxQuery) (int, int) {
+	if q.Page > 0 {
+		pageSize := q.PageSize
+		if pageSize <= 0 {
+			pageSize = 20
+		}
+		return 1, pageSize
+	}
+	return 1, q.Limit
 }
 
 func (b *managerBackend) GetMessage(accountID string, uid uint32, recipients []string) (*mail.FullMessage, error) {

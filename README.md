@@ -167,13 +167,17 @@ POST /api/create
 #### 读取邮件
 
 ```bash
-GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
+GET /api/inbox?account_id=acc_1&page=1&page_size=20&q=欢迎&field=all
 
 # 参数说明:
 #   account_id - 必填: 账号 ID
 #   alias      - 可选: 只读取发到该别名的邮件
-#   limit      - 可选: 返回邮件数量 (默认 20)
-#   days       - 可选: 查找最近几天的邮件 (默认 7)
+#   page       - 页码，从 1 开始；使用搜索分页模式
+#   page_size  - 每页邮件数量 (默认 20)
+#   q          - 可选: 搜索主题、邮箱、正文中的关键词
+#   field      - all / subject / from / to / body (默认 all)
+# 不传 days 时搜索全部历史，不需要先设置时间或加载范围。
+# 未传 page 的旧 limit/days 模式仍兼容，详情见 API.md。
 
 # 响应
 {
@@ -182,6 +186,9 @@ GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
     "account_id": "acc_1",
     "alias": "xyz123@icloud.com",
     "count": 2,
+    "total": 2,
+    "page": 1,
+    "page_size": 20,
     "method": "imap",
     "messages": [
       {

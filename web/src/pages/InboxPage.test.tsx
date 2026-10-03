@@ -32,6 +32,9 @@ const inboxResult: InboxResult = {
   account_id: 'acc_1',
   alias: 'alpha@icloud.com',
   count: 1,
+  total: 1,
+  page: 1,
+  page_size: 20,
   method: 'imap',
   messages: [
     {
@@ -80,7 +83,7 @@ describe('InboxPage', () => {
     )
   })
 
-  it('账号必选;alias 可空;limit/days 生效;query 经 URLSearchParams', async () => {
+  it('默认查询全部历史，关键词安全编码并发送至服务器', async () => {
     let lastUrl = ''
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
@@ -95,20 +98,21 @@ describe('InboxPage', () => {
     const url = new URL(lastUrl)
     expect(url.searchParams.get('account_id')).toBe('acc_1')
     expect(url.searchParams.get('scope')).toBe('hme_aliases')
-    expect(url.searchParams.get('limit')).toBe('20')
-    expect(url.searchParams.get('days')).toBe('7')
+    expect(url.searchParams.get('page')).toBe('1')
+    expect(url.searchParams.get('page_size')).toBe('20')
+    expect(url.searchParams.has('limit')).toBe(false)
+    expect(url.searchParams.has('days')).toBe(false)
     expect(screen.getByRole('option', { name: '全部 iCloud 隐私别名' })).toBeInTheDocument()
     expect(screen.getByText(/仅展示当前账号所有 iCloud 隐私别名/)).toBeInTheDocument()
-    // 修改 limit/days 再查询
     const user = userEvent.setup()
-    await user.selectOptions(screen.getByLabelText(/加载范围/), '100')
-    await user.selectOptions(screen.getByLabelText(/时间范围/), '30')
-    await user.click(screen.getByRole('button', { name: /应用筛选/ }))
+    await user.type(screen.getByLabelText('搜索邮件'), '旧邮件 & 状态')
+    await user.click(screen.getByRole('button', { name: '搜索' }))
     await waitFor(() => {
       const u = new URL(lastUrl)
-      expect(u.searchParams.get('limit')).toBe('100')
-      expect(u.searchParams.get('days')).toBe('30')
+      expect(u.searchParams.get('q')).toBe('旧邮件 & 状态')
+      expect(u.searchParams.get('field')).toBe('all')
     })
+    expect(screen.queryByLabelText(/加载范围|时间范围/)).toBeNull()
   })
 
   it('从 URL 的 alias 参数初始化筛选,支持别名页直达收件箱', async () => {
@@ -160,33 +164,37 @@ describe('InboxPage', () => {
     expect(screen.getByText('Web API 摘要模式')).toBeInTheDocument()
   })
 
-  it('在已加载窗口内按邮箱搜索并分页', async () => {
-    const messages = Array.from({ length: 12 }, (_, index) => ({
+  it('向服务器翻页并直接搜索当前页外的邮箱邮件', async () => {
+    const messages = Array.from({ length: 120 }, (_, index) => ({
       ...inboxResult.messages[0],
       id: String(index + 1),
-      from: index === 11 ? 'special@example.com' : `sender-${index + 1}@example.com`,
+      from: index === 119 ? 'special@example.com' : `sender-${index + 1}@example.com`,
       subject: `主题 ${index + 1}`,
       preview: `摘要 ${index + 1}`,
     }))
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
-      http.get('/api/inbox', () => HttpResponse.json({
-        success: true,
-        data: { ...inboxResult, count: messages.length, messages },
-      })),
+      http.get('/api/inbox', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        const page = Number(params.get('page'))
+        const pageSize = Number(params.get('page_size'))
+        const q = params.get('q') ?? ''
+        const matches = q ? messages.filter((message) => message.from.includes(q)) : messages
+        return HttpResponse.json({ success: true, data: { ...inboxResult, count: Math.min(pageSize, matches.length), total: matches.length, page, page_size: pageSize, messages: matches.slice((page - 1) * pageSize, page * pageSize) } })
+      }),
     )
 
     renderPage()
     expect(await screen.findByRole('button', { name: '主题 1' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '主题 11' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '主题 21' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '下一页' }))
-    expect(screen.getByRole('button', { name: '主题 11' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '主题 21' })).toBeInTheDocument()
 
     const user = userEvent.setup()
     await user.selectOptions(screen.getByLabelText('搜索字段'), 'from')
-    await user.type(screen.getByLabelText('搜索当前已加载邮件'), 'special@example.com')
-    expect(screen.getByRole('button', { name: '主题 12' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '主题 11' })).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('搜索邮件'), 'special@example.com')
+    expect(await screen.findByRole('button', { name: '主题 120' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '主题 21' })).not.toBeInTheDocument()
     expect(screen.getByText('第 1-1 项，共 1 项')).toBeInTheDocument()
   })
 
@@ -219,7 +227,7 @@ describe('InboxPage', () => {
       http.get('/api/inbox', () =>
         HttpResponse.json({
           success: true,
-          data: { account_id: 'acc_1', count: 0, messages: [], method: 'imap' },
+          data: { ...inboxResult, count: 0, total: 0, messages: [] },
         }),
       ),
     )
@@ -296,8 +304,8 @@ describe('InboxPage', () => {
     await screen.findByText(/加载中/)
     // 触发第二次查询(首次挂起中)
     const user = userEvent.setup()
-    await user.selectOptions(screen.getByLabelText(/加载范围/), '100')
-    await user.click(screen.getByRole('button', { name: /应用筛选/ }))
+    await user.type(screen.getByLabelText('搜索邮件'), '第二请求')
+    await user.click(screen.getByRole('button', { name: '搜索' }))
     await screen.findByText('第二请求主题')
     // 第一次请求此时才返回
     release?.()
@@ -424,7 +432,7 @@ describe('InboxPage', () => {
     expect(await screen.findByText('acc_2')).toBeInTheDocument()
   })
 
-  it('切换账号时丢弃未应用的范围草稿，使控件与请求保持一致', async () => {
+  it('切换账号重置页码与别名，并保留关键词，不沿用旧范围限制', async () => {
     const secondAccount: AccountSummary = { ...accounts[0], id: 'acc_2', name: '备用号' }
     const accountOptions = [...accounts, secondAccount]
     let secondAccountURL = ''
@@ -440,19 +448,18 @@ describe('InboxPage', () => {
       }),
     )
 
-    renderPage('/inbox?account_id=acc_1&limit=50&days=30')
+    renderPage('/inbox?account_id=acc_1&limit=50&days=30&q=合同&page=3')
     const user = userEvent.setup()
     await screen.findByText('主题一')
-    await user.selectOptions(screen.getByLabelText(/加载范围/), '100')
-    await user.selectOptions(screen.getByLabelText(/时间范围/), '90')
     await user.selectOptions(screen.getByLabelText(/账号/), 'acc_2')
 
     await waitFor(() => expect(secondAccountURL).not.toBe(''))
     const query = new URL(secondAccountURL).searchParams
-    expect(query.get('limit')).toBe('50')
-    expect(query.get('days')).toBe('30')
-    expect(screen.getByLabelText(/加载范围/)).toHaveValue('50')
-    expect(screen.getByLabelText(/时间范围/)).toHaveValue('30')
+    expect(query.get('limit')).toBeNull()
+    expect(query.get('days')).toBeNull()
+    expect(query.get('page')).toBe('1')
+    expect(query.get('q')).toBe('合同')
+    expect(screen.getByLabelText('搜索邮件')).toHaveValue('合同')
   })
 
   it('删除重试始终绑定最初账号和邮件 UID', async () => {
@@ -519,16 +526,17 @@ describe('InboxPage', () => {
     renderPage()
     await accountsStarted
     const user = userEvent.setup()
-    await user.selectOptions(screen.getByLabelText(/加载范围/), '100')
-    await user.selectOptions(screen.getByLabelText(/时间范围/), '30')
+    await user.type(screen.getByLabelText('搜索邮件'), '历史关键词')
+    await user.click(screen.getByRole('button', { name: '搜索' }))
     releaseAccounts?.()
 
     await waitFor(() => expect(screen.getByLabelText(/账号/)).toHaveValue('acc_1'))
     await screen.findByText('主题一')
     const query = new URL(inboxURL).searchParams
     expect(query.get('account_id')).toBe('acc_1')
-    expect(query.get('limit')).toBe('100')
-    expect(query.get('days')).toBe('30')
+    expect(query.get('q')).toBe('历史关键词')
+    expect(query.get('days')).toBeNull()
+    expect(query.get('limit')).toBeNull()
     expect(screen.queryByRole('status', { name: /加载中/ })).toBeNull()
   })
 
@@ -656,18 +664,25 @@ describe('InboxPage', () => {
     }))
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
-      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: { ...inboxResult, count: messages.length, messages } })),
+      http.get('/api/inbox', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        const page = Number(params.get('page'))
+        const size = Number(params.get('page_size'))
+        return HttpResponse.json({ success: true, data: { ...inboxResult, count: Math.min(size, messages.length), total: messages.length, page, page_size: size, messages: messages.slice((page - 1) * size, page * size) } })
+      }),
       http.get('/api/inbox/:id', ({ params }) => HttpResponse.json({ success: true, data: { ...fullMessage, id: String(params.id), subject: `保留状态 ${params.id}` } })),
     )
-    renderPage()
+    renderPage('/inbox?page_size=10')
     const user = userEvent.setup()
     await screen.findByRole('button', { name: '保留状态 1' })
-    await user.type(screen.getByLabelText('搜索当前已加载邮件'), '保留状态')
+    await user.type(screen.getByLabelText('搜索邮件'), '保留状态')
+    await user.click(screen.getByRole('button', { name: '搜索' }))
+    await waitFor(() => expect(screen.queryByRole('status', { name: '加载中' })).toBeNull())
     await user.click(screen.getByRole('button', { name: '下一页' }))
-    await user.click(screen.getByRole('button', { name: '保留状态 11' }))
+    await user.click(await screen.findByRole('button', { name: '保留状态 11' }))
     await screen.findByText('Plain detail body')
     await user.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
-    expect(screen.getByLabelText('搜索当前已加载邮件')).toHaveValue('保留状态')
+    expect(screen.getByLabelText('搜索邮件')).toHaveValue('保留状态')
     expect(screen.getByText('第 11-12 项，共 12 项')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '保留状态 11' })).toBeInTheDocument()
   })

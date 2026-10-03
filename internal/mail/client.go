@@ -27,6 +27,8 @@ const (
 	IMAPPort              = 993
 	defaultConnectTimeout = 10 * time.Second
 	defaultCommandTimeout = 30 * time.Second
+	searchEnvelopeBatch   = 200
+	searchPreviewBytes    = 32 * 1024
 )
 
 // Variables keep timeout regression tests fast while production uses the
@@ -56,6 +58,15 @@ type FullMessage struct {
 	HTMLBody      string `json:"html_body,omitempty"`
 	BodyTruncated bool   `json:"body_truncated,omitempty"`
 	ContentType   string `json:"content_type"`
+}
+
+// SearchResult is a fully verified page of messages addressed to HME aliases.
+// Total is computed after checking every SEARCH candidate's parsed envelope.
+type SearchResult struct {
+	Messages []Message
+	Total    int
+	Page     int
+	PageSize int
 }
 
 // Client 是 iCloud 邮件 IMAP 客户端。
@@ -321,6 +332,115 @@ func (c *Client) FindByRecipients(recipients []string, limit int, days int) ([]M
 	return nil, err
 }
 
+// SearchByRecipients searches the complete INBOX and returns one page after
+// rechecking every server-side SEARCH candidate against the parsed envelope.
+// Only the requested page has its body downloaded for preview generation.
+func (c *Client) SearchByRecipients(recipients []string, page, pageSize int, query, field string, days int) (SearchResult, error) {
+	recipients = normalizeRecipients(recipients)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	empty := SearchResult{Messages: []Message{}, Page: 1, PageSize: pageSize}
+	if len(recipients) == 0 {
+		return empty, nil
+	}
+	if c.cli == nil {
+		return SearchResult{}, fmt.Errorf("未连接")
+	}
+	if _, err := c.cli.Select("INBOX", true); err != nil {
+		return SearchResult{}, err
+	}
+
+	criteria := recipientTextSearchCriteria(recipients, strings.TrimSpace(query), field, days, time.Now())
+	uids, err := c.cli.UidSearch(criteria)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	uids = normalizeUIDs(uids, 0)
+	recipientSet := make(map[string]struct{}, len(recipients))
+	for _, recipient := range recipients {
+		recipientSet[recipient] = struct{}{}
+	}
+	verified, err := c.fetchVerifiedEnvelopeUIDs(uids, recipientSet)
+	if err != nil {
+		return SearchResult{}, err
+	}
+
+	total := len(verified)
+	totalPages := 1
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := min(start+pageSize, total)
+	pageUIDs := make([]uint32, 0, end-start)
+	for i := start; i < end; i++ {
+		pageUIDs = append(pageUIDs, verified[total-1-i])
+	}
+
+	messages, err := c.fetchSearchPage(pageUIDs, recipientSet)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	return SearchResult{Messages: messages, Total: total, Page: page, PageSize: pageSize}, nil
+}
+
+// Fetch a page in one command, bounding preview transfer without downloading
+// attachments. Full reading still uses GetFullForRecipients separately.
+func (c *Client) fetchSearchPage(uids []uint32, recipients map[string]struct{}) ([]Message, error) {
+	if len(uids) == 0 {
+		return []Message{}, nil
+	}
+	seqset := new(imap.SeqSet)
+	requested := make(map[uint32]struct{}, len(uids))
+	for _, uid := range uids {
+		seqset.AddNum(uid)
+		requested[uid] = struct{}{}
+	}
+	section := &imap.BodySectionName{Peek: true, Partial: []int{0, searchPreviewBytes}}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchInternalDate, section.FetchItem()}
+	responses := make(chan *imap.Message, len(uids))
+	done := make(chan error, 1)
+	go func() { done <- c.cli.UidFetch(seqset, items, responses) }()
+	selected := make(map[uint32]*imap.Message, len(uids))
+	for msg := range responses {
+		if msg == nil || msg.Envelope == nil || msg.GetBody(section) == nil {
+			continue
+		}
+		if _, ok := requested[msg.Uid]; !ok {
+			continue
+		}
+		if selected[msg.Uid] == nil {
+			selected[msg.Uid] = msg
+		}
+	}
+	if err := <-done; err != nil {
+		return nil, err
+	}
+	result := make([]Message, 0, len(uids))
+	for _, uid := range uids {
+		raw := selected[uid]
+		if raw == nil {
+			return nil, fmt.Errorf("%w: 邮件预览不完整 (uid=%d)", ErrMessageOutsideHME, uid)
+		}
+		if !envelopeMatchesRecipients(raw.Envelope, recipients) {
+			return nil, ErrMessageOutsideHME
+		}
+		message := toMessage(raw)
+		if parsed, err := parseRFC822(raw.GetBody(section)); err == nil {
+			message.Preview = truncateRunes(strings.TrimSpace(parsed.body), previewRuneLimit)
+		}
+		result = append(result, message)
+	}
+	return result, nil
+}
+
 func normalizeRecipients(recipients []string) []string {
 	seen := make(map[string]struct{}, len(recipients))
 	out := make([]string, 0, len(recipients))
@@ -354,6 +474,26 @@ func recipientSearchCriteria(recipients []string, days int, now time.Time) *imap
 	criteria := build(0, len(recipients))
 	if days > 0 {
 		criteria.Since = now.AddDate(0, 0, -days)
+	}
+	return criteria
+}
+
+func recipientTextSearchCriteria(recipients []string, query, field string, days int, now time.Time) *imap.SearchCriteria {
+	criteria := recipientSearchCriteria(recipients, days, now)
+	if query == "" {
+		return criteria
+	}
+	switch strings.ToLower(field) {
+	case "subject":
+		criteria.Header.Add("Subject", query)
+	case "from":
+		criteria.Header.Add("From", query)
+	case "to":
+		criteria.Header.Add("To", query)
+	case "body":
+		criteria.Body = append(criteria.Body, query)
+	default:
+		criteria.Text = append(criteria.Text, query)
 	}
 	return criteria
 }
@@ -393,6 +533,57 @@ func envelopeMatchesRecipients(envelope *imap.Envelope, recipients map[string]st
 		}
 	}
 	return false
+}
+
+// fetchVerifiedEnvelopeUIDs fetches only envelope metadata, in bounded
+// batches, and preserves the normalized ascending UID order. Responses for
+// unrequested UIDs and duplicate unsolicited responses are ignored.
+func (c *Client) fetchVerifiedEnvelopeUIDs(uids []uint32, recipients map[string]struct{}) ([]uint32, error) {
+	if len(uids) == 0 || len(recipients) == 0 {
+		return []uint32{}, nil
+	}
+	verifiedSet := make(map[uint32]struct{}, len(uids))
+	for start := 0; start < len(uids); start += searchEnvelopeBatch {
+		end := min(start+searchEnvelopeBatch, len(uids))
+		batch := uids[start:end]
+		requested := make(map[uint32]struct{}, len(batch))
+		seqset := new(imap.SeqSet)
+		for _, uid := range batch {
+			requested[uid] = struct{}{}
+			seqset.AddNum(uid)
+		}
+		messages := make(chan *imap.Message, len(batch))
+		done := make(chan error, 1)
+		go func() {
+			done <- c.cli.UidFetch(seqset, []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}, messages)
+		}()
+		seen := make(map[uint32]struct{}, len(batch))
+		for msg := range messages {
+			if msg == nil || msg.Envelope == nil {
+				continue
+			}
+			if _, ok := requested[msg.Uid]; !ok {
+				continue
+			}
+			if _, duplicate := seen[msg.Uid]; duplicate {
+				continue
+			}
+			seen[msg.Uid] = struct{}{}
+			if envelopeMatchesRecipients(msg.Envelope, recipients) {
+				verifiedSet[msg.Uid] = struct{}{}
+			}
+		}
+		if err := <-done; err != nil {
+			return nil, err
+		}
+	}
+	verified := make([]uint32, 0, len(verifiedSet))
+	for _, uid := range uids {
+		if _, ok := verifiedSet[uid]; ok {
+			verified = append(verified, uid)
+		}
+	}
+	return verified, nil
 }
 
 // ForEachByRecipient 按新→旧遍历发给 recipient 的最近 limit 封邮件。

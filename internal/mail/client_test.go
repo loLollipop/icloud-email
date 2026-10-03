@@ -61,6 +61,34 @@ func TestRecipientSearchCriteriaUsesBalancedOrAndSince(t *testing.T) {
 	}
 }
 
+func TestRecipientTextSearchCriteriaCombinesScopeAndServerSearch(t *testing.T) {
+	now := time.Date(2026, time.October, 3, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		field string
+		check func(*imap.SearchCriteria) bool
+	}{
+		{field: "all", check: func(c *imap.SearchCriteria) bool { return fmt.Sprint(c.Text) == "[needle]" }},
+		{field: "subject", check: func(c *imap.SearchCriteria) bool { return c.Header.Get("Subject") == "needle" }},
+		{field: "from", check: func(c *imap.SearchCriteria) bool { return c.Header.Get("From") == "needle" }},
+		{field: "to", check: func(c *imap.SearchCriteria) bool { return c.Header.Get("To") == "needle" }},
+		{field: "body", check: func(c *imap.SearchCriteria) bool { return fmt.Sprint(c.Body) == "[needle]" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			criteria := recipientTextSearchCriteria([]string{"a@icloud.com", "b@icloud.com"}, "needle", tt.field, 0, now)
+			if len(criteria.Or) != 1 {
+				t.Fatalf("recipient OR scope missing: %#v", criteria)
+			}
+			if !criteria.Since.IsZero() {
+				t.Fatalf("Since = %v, want full history", criteria.Since)
+			}
+			if !tt.check(criteria) {
+				t.Fatalf("criteria = %#v, search field %q missing", criteria, tt.field)
+			}
+		})
+	}
+}
+
 func TestNormalizeUIDsSortsDeduplicatesAndLimitsNewest(t *testing.T) {
 	got := normalizeUIDs([]uint32{7, 2, 7, 9, 3, 0}, 3)
 	want := []uint32{3, 7, 9}
@@ -539,6 +567,343 @@ func TestClientFetchTimeoutClosesChannels(t *testing.T) {
 		t.Fatal("ListInbox goroutine/channel remained blocked after command timeout")
 	}
 	stopServer()
+}
+
+func TestSearchByRecipientsSearchesFullInboxAndPaginatesVerifiedMatches(t *testing.T) {
+	useIMAPTimeouts(t, time.Second, 3*time.Second)
+	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	release := make(chan struct{})
+	serverDone := make(chan error, 1)
+	var releaseOnce sync.Once
+	stopServer := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		stopServer()
+		_ = ln.Close()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("search pagination test server: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("search pagination test server did not stop")
+		}
+	})
+	go serveSearchPagination(ln, serverTLS, []int{1}, release, serverDone)
+
+	c := newTestClient(t, ln, clientTLS)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(c.forceClose)
+	result, err := c.SearchByRecipients([]string{"alias@icloud.com"}, 999, 2, "needle", "all", 0)
+	if err != nil {
+		t.Fatalf("SearchByRecipients: %v", err)
+	}
+	if result.Total != 203 || result.Page != 102 || result.PageSize != 2 {
+		t.Fatalf("result metadata = %#v, want total=203 clamped page=102 page_size=2", result)
+	}
+	if len(result.Messages) != 1 || result.Messages[0].ID != "1" {
+		t.Fatalf("messages = %#v, want final global page UID 1", result.Messages)
+	}
+	stopServer()
+}
+
+func TestSearchByRecipientsEmptyResultUsesFirstPageAndNonNilMessages(t *testing.T) {
+	useIMAPTimeouts(t, time.Second, time.Second)
+	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	serverDone := make(chan error, 1)
+	go serveEmptySearch(ln, serverTLS, serverDone)
+	c := newTestClient(t, ln, clientTLS)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	result, err := c.SearchByRecipients([]string{"alias@icloud.com"}, 9, 20, "missing", "subject", 0)
+	c.forceClose()
+	_ = ln.Close()
+	if err != nil {
+		t.Fatalf("SearchByRecipients: %v", err)
+	}
+	if result.Total != 0 || result.Page != 1 || result.PageSize != 20 || result.Messages == nil || len(result.Messages) != 0 {
+		t.Fatalf("empty result = %#v", result)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+}
+
+func TestSearchByRecipientsFailsClosedOnSearchOrEnvelopeFetchError(t *testing.T) {
+	for _, stage := range []string{"search", "fetch"} {
+		t.Run(stage, func(t *testing.T) {
+			useIMAPTimeouts(t, time.Second, time.Second)
+			ln, serverTLS, clientTLS := newTestTLSListener(t)
+			serverDone := make(chan error, 1)
+			go serveSearchFailure(ln, serverTLS, stage, serverDone)
+			c := newTestClient(t, ln, clientTLS)
+			if err := c.Connect(); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			_, err := c.SearchByRecipients([]string{"alias@icloud.com"}, 1, 20, "", "all", 0)
+			c.forceClose()
+			_ = ln.Close()
+			if err == nil {
+				t.Fatalf("SearchByRecipients succeeded on %s failure", stage)
+			}
+			if serverErr := <-serverDone; serverErr != nil {
+				t.Fatal(serverErr)
+			}
+		})
+	}
+}
+
+func serveSearchPagination(ln net.Listener, serverTLS *tls.Config, pageUIDs []int, release <-chan struct{}, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	write := func(response string) bool {
+		if _, writeErr := conn.Write([]byte(response)); writeErr != nil {
+			done <- writeErr
+			return false
+		}
+		return true
+	}
+	read := func(want string) (string, bool) {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			done <- readErr
+			return "", false
+		}
+		if !strings.Contains(strings.ToUpper(line), strings.ToUpper(want)) {
+			done <- fmt.Errorf("received %q, want %q", line, want)
+			return "", false
+		}
+		return line, true
+	}
+	if !write("* OK [CAPABILITY IMAP4rev1] ready\r\n") {
+		return
+	}
+	login, ok := read("LOGIN")
+	if !ok || !write(imapTag(login)+" OK LOGIN completed\r\n") {
+		return
+	}
+	selectCmd, ok := read("INBOX")
+	if !ok || !write("* 300 EXISTS\r\n"+imapTag(selectCmd)+" OK [READ-ONLY] completed\r\n") {
+		return
+	}
+	search, ok := read("UID SEARCH")
+	if !ok {
+		return
+	}
+	upperSearch := strings.ToUpper(search)
+	if !strings.Contains(upperSearch, "TO ") || !strings.Contains(upperSearch, "ALIAS@ICLOUD.COM") || !strings.Contains(upperSearch, "TEXT ") || !strings.Contains(upperSearch, "NEEDLE") || strings.Contains(upperSearch, "SINCE") {
+		done <- fmt.Errorf("unexpected full-history search command %q", search)
+		return
+	}
+	uidTexts := make([]string, 0, 206)
+	for uid := 1; uid <= 205; uid++ {
+		uidTexts = append(uidTexts, strconv.Itoa(uid))
+	}
+	uidTexts = append(uidTexts, "205") // prove duplicate SEARCH UIDs are normalized
+	if !write("* SEARCH " + strings.Join(uidTexts, " ") + "\r\n" + imapTag(search) + " OK SEARCH completed\r\n") {
+		return
+	}
+
+	for batch := 0; batch < 2; batch++ {
+		fetch, ok := read("UID FETCH")
+		if !ok {
+			return
+		}
+		if strings.Contains(strings.ToUpper(fetch), "BODY") {
+			done <- fmt.Errorf("candidate verification downloaded bodies: %q", fetch)
+			return
+		}
+		start, end := 1, 200
+		if batch == 1 {
+			start, end = 201, 205
+		}
+		if batch == 0 {
+			if !write(searchEnvelopeResponse(999, "alias", "icloud.com")) {
+				return
+			}
+		}
+		for uid := start; uid <= end; uid++ {
+			mailbox, host := "alias", "icloud.com"
+			if uid == 50 {
+				mailbox, host = "normal", "example.com"
+			} else if uid == 51 {
+				mailbox = " alias" // a distinct quoted local-part must not authorize
+			}
+			if !write(searchEnvelopeResponse(uid, mailbox, host)) {
+				return
+			}
+			if uid == 1 && !write(searchEnvelopeResponse(uid, "normal", "example.com")) {
+				return // duplicate response must not overwrite the first usable envelope
+			}
+		}
+		if !write(imapTag(fetch) + " OK FETCH completed\r\n") {
+			return
+		}
+	}
+
+	fetch, ok := read("UID FETCH ")
+	if !ok {
+		return
+	}
+	fields := strings.Fields(fetch)
+	set := new(imap.SeqSet)
+	if len(fields) < 4 || set.Add(fields[3]) != nil || !strings.Contains(fetch, "BODY.PEEK[]<0.32768>") {
+		done <- fmt.Errorf("unexpected page preview command %q", fetch)
+		return
+	}
+	for _, uid := range pageUIDs {
+		if !set.Contains(uint32(uid)) {
+			done <- fmt.Errorf("page UID %d missing from %q", uid, fetch)
+			return
+		}
+		body := fmt.Sprintf("From: sender@example.com\r\nTo: alias@icloud.com\r\nSubject: needle %d\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nbody %d", uid, uid)
+		envelope := fmt.Sprintf("ENVELOPE (\"03-Oct-2025 02:00:00 +0000\" \"needle %d\" ((NIL NIL \"sender\" \"example.com\")) NIL NIL ((NIL NIL \"alias\" \"icloud.com\")) NIL NIL NIL NIL)", uid)
+		response := fmt.Sprintf("* %d FETCH (UID %d %s INTERNALDATE \"03-Oct-2025 02:00:00 +0000\" BODY[]<0> {%d}\r\n%s)\r\n", uid, uid, envelope, len(body), body)
+		if !write(response) {
+			return
+		}
+	}
+	if !write(imapTag(fetch) + " OK FETCH completed\r\n") {
+		return
+	}
+	<-release
+	done <- nil
+}
+
+func TestSearchPageFetchesOrderedPreviewsInSingleBoundedCommand(t *testing.T) {
+	useIMAPTimeouts(t, time.Second, 3*time.Second)
+	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go serveSearchPagination(ln, serverTLS, []int{205, 204}, release, done)
+	c := newTestClient(t, ln, clientTLS)
+	defer func() {
+		c.forceClose()
+		close(release)
+		_ = ln.Close()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	if err := c.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	result, err := c.SearchByRecipients([]string{"alias@icloud.com"}, 1, 2, "needle", "all", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].ID != "205" || result.Messages[1].ID != "204" || result.Messages[0].Preview != "body 205" {
+		t.Fatalf("page messages = %#v", result.Messages)
+	}
+}
+
+func serveEmptySearch(ln net.Listener, serverTLS *tls.Config, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	if _, err = conn.Write([]byte("* OK [CAPABILITY IMAP4rev1] ready\r\n")); err != nil {
+		done <- err
+		return
+	}
+	login, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	_, _ = conn.Write([]byte(imapTag(login) + " OK LOGIN completed\r\n"))
+	selectCmd, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	_, _ = conn.Write([]byte("* 0 EXISTS\r\n" + imapTag(selectCmd) + " OK completed\r\n"))
+	search, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	upperSearch := strings.ToUpper(search)
+	if !strings.Contains(upperSearch, "SUBJECT ") || !strings.Contains(upperSearch, "MISSING") {
+		done <- fmt.Errorf("received %q, want SUBJECT search", search)
+		return
+	}
+	_, err = conn.Write([]byte("* SEARCH\r\n" + imapTag(search) + " OK SEARCH completed\r\n"))
+	done <- err
+}
+
+func searchEnvelopeResponse(uid int, mailbox, host string) string {
+	envelope := fmt.Sprintf("ENVELOPE (\"03-Oct-2025 02:00:00 +0000\" \"needle %d\" ((NIL NIL \"sender\" \"example.com\")) NIL NIL ((NIL NIL %q %q)) NIL NIL NIL NIL)", uid, mailbox, host)
+	return fmt.Sprintf("* %d FETCH (UID %d %s)\r\n", uid, uid, envelope)
+}
+
+func serveSearchFailure(ln net.Listener, serverTLS *tls.Config, stage string, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	if _, err = conn.Write([]byte("* OK [CAPABILITY IMAP4rev1] ready\r\n")); err != nil {
+		done <- err
+		return
+	}
+	login, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	_, _ = conn.Write([]byte(imapTag(login) + " OK LOGIN completed\r\n"))
+	selectCmd, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	_, _ = conn.Write([]byte("* 1 EXISTS\r\n" + imapTag(selectCmd) + " OK completed\r\n"))
+	search, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	if stage == "search" {
+		_, err = conn.Write([]byte(imapTag(search) + " NO SEARCH failed\r\n"))
+		done <- err
+		return
+	}
+	_, _ = conn.Write([]byte("* SEARCH 1\r\n" + imapTag(search) + " OK SEARCH completed\r\n"))
+	fetch, err := reader.ReadString('\n')
+	if err != nil {
+		done <- err
+		return
+	}
+	_, err = conn.Write([]byte(imapTag(fetch) + " NO FETCH failed\r\n"))
+	done <- err
 }
 
 func serveDuplicateUIDFetch(ln net.Listener, serverTLS *tls.Config, release <-chan struct{}, done chan<- error) {

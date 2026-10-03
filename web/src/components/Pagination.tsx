@@ -6,12 +6,13 @@ interface PaginationProps {
   onPageSizeChange: (pageSize: number) => void
   pageSizeOptions?: number[]
   label?: string
+  disabled?: boolean
 }
 
 function pageNumbers(currentPage: number, totalPages: number): number[] {
-  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1)
-  const start = Math.max(1, Math.min(currentPage - 2, totalPages - 4))
-  return Array.from({ length: 5 }, (_, index) => start + index)
+  if (totalPages <= 5) return Array.from({ length: totalPages }, (_, index) => index + 1)
+  const start = Math.max(2, Math.min(currentPage - 1, totalPages - 3))
+  return [1, ...Array.from({ length: 3 }, (_, index) => start + index), totalPages]
 }
 
 export default function Pagination({
@@ -22,6 +23,7 @@ export default function Pagination({
   onPageSizeChange,
   pageSizeOptions = [10, 20, 50],
   label = '分页',
+  disabled = false,
 }: PaginationProps) {
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize))
   const currentPage = Math.min(Math.max(1, page), totalPages)
@@ -39,6 +41,7 @@ export default function Pagination({
         <select
           aria-label="每页条数"
           value={pageSize}
+          disabled={disabled}
           onChange={(event) => onPageSizeChange(Number(event.target.value))}
         >
           {pageSizeOptions.map((option) => (
@@ -50,29 +53,30 @@ export default function Pagination({
         <button
           type="button"
           onClick={() => onPageChange(currentPage - 1)}
-          disabled={currentPage === 1}
+          disabled={disabled || currentPage === 1}
           aria-label="上一页"
         >
           上一页
         </button>
-        {pages[0] > 1 && <span className="pagination-ellipsis" aria-hidden="true">…</span>}
-        {pages.map((pageNumber) => (
-          <button
-            type="button"
-            key={pageNumber}
-            className={pageNumber === currentPage ? 'is-current' : undefined}
-            aria-label={`第 ${pageNumber} 页`}
-            aria-current={pageNumber === currentPage ? 'page' : undefined}
-            onClick={() => onPageChange(pageNumber)}
-          >
-            {pageNumber}
-          </button>
+        {pages.map((pageNumber, index) => (
+          <span className="pagination-page-entry" key={pageNumber}>
+            {index > 0 && pageNumber - pages[index - 1] > 1 && <span className="pagination-ellipsis" aria-hidden="true">…</span>}
+            <button
+              type="button"
+              disabled={disabled}
+              className={pageNumber === currentPage ? 'is-current' : undefined}
+              aria-label={`第 ${pageNumber} 页`}
+              aria-current={pageNumber === currentPage ? 'page' : undefined}
+              onClick={() => onPageChange(pageNumber)}
+            >
+              {pageNumber}
+            </button>
+          </span>
         ))}
-        {pages[pages.length - 1] < totalPages && <span className="pagination-ellipsis" aria-hidden="true">…</span>}
         <button
           type="button"
           onClick={() => onPageChange(currentPage + 1)}
-          disabled={currentPage === totalPages}
+          disabled={disabled || currentPage === totalPages}
           aria-label="下一页"
         >
           下一页

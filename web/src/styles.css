@@ -157,7 +157,7 @@ body {
   min-height: 100vh;
 }
 
-.app-shell header {
+.app-shell > header {
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
@@ -202,13 +202,13 @@ body {
   letter-spacing: 0.02em;
 }
 
-.app-shell nav {
+.app-shell > header > nav {
   display: flex;
   gap: var(--space-1);
   flex-wrap: wrap;
 }
 
-.app-shell nav a {
+.app-shell > header > nav a {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -222,18 +222,18 @@ body {
     color var(--dur-fast) var(--ease-out);
 }
 
-.app-shell nav a svg {
+.app-shell > header > nav a svg {
   width: 18px;
   height: 18px;
   flex-shrink: 0;
 }
 
-.app-shell nav a:hover {
+.app-shell > header > nav a:hover {
   background: var(--color-bg-subtle);
   color: var(--color-text);
 }
 
-.app-shell nav a[aria-current='page'] {
+.app-shell > header > nav a[aria-current='page'] {
   background: var(--color-primary-soft);
   color: var(--color-primary);
   font-weight: 600;
@@ -915,12 +915,17 @@ td .cell-secondary {
 }
 
 .pagination-size,
-.pagination-pages {
+.pagination-pages,
+.pagination-page-entry {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   margin: 0;
 }
+
+.pagination-status { margin-right: auto; }
+.pagination-pages { justify-content: flex-end; flex-wrap: wrap; }
+.pagination-page-entry { gap: var(--space-1); }
 
 .pagination-size select {
   width: auto;
@@ -981,12 +986,12 @@ td .cell-secondary {
 .link-like svg { margin-right: 5px; vertical-align: -2px; }
 
 /* 收件箱工作台 */
-.inbox-toolbar { grid-template-columns: repeat(4, minmax(130px, 1fr)) auto; }
+.inbox-toolbar { grid-template-columns: minmax(150px, 0.7fr) minmax(200px, 1.3fr) auto; }
 .toolbar-actions { display: flex; align-items: flex-end; }
 .toolbar-actions button { white-space: nowrap; }
-.inbox-local-search {
+.inbox-search {
   display: grid;
-  grid-template-columns: 150px minmax(220px, 1fr) auto;
+  grid-template-columns: 135px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
@@ -1035,11 +1040,11 @@ td .cell-secondary {
 .mail-list-sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mail-list-copy { display: flex; min-width: 0; grid-column: 1 / -1; gap: var(--space-2); }
 .mail-list-date { flex-shrink: 0; color: var(--color-text-tertiary); font-size: var(--text-xs); }
-.mail-list-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.mail-list-subject { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .mail-list-preview { overflow: hidden; color: var(--color-text-secondary); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .mail-list .pagination { padding: var(--space-2) var(--space-3) var(--space-3); }
-.mail-list .pagination-size { order: 2; }
-.mail-list .pagination-pages { width: 100%; justify-content: space-between; order: 3; }
+.mail-list-copy { flex-direction: column; gap: 2px; }
+.inbox-search button { white-space: nowrap; }
 
 .mail-detail { width: 100%; min-width: 0; padding: var(--space-5); overflow-wrap: anywhere; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-raised); }
 .app-shell .mail-reader-header {
@@ -1074,11 +1079,6 @@ td .cell-secondary {
     grid-column: auto;
   }
 
-  .mail-list-subject::after {
-    margin-left: var(--space-2);
-    color: var(--color-text-tertiary);
-    content: "—";
-  }
 }
 
 @media (max-width: 899px) {
@@ -1091,13 +1091,15 @@ td .cell-secondary {
 @media (max-width: 600px) {
   .alias-toolbar,
   .inbox-toolbar,
-  .inbox-local-search { grid-template-columns: 1fr; }
-  .inbox-local-search .hint { margin-top: 0; }
+  .inbox-search { grid-template-columns: 1fr; }
   .pagination { align-items: flex-start; }
-  .pagination-pages { width: 100%; overflow-x: auto; }
-  .app-shell header { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
-  .app-shell header .brand { width: 100%; }
-  .app-shell header .spacer { display: none; }
+  .pagination-pages { width: 100%; justify-content: center; gap: var(--space-1); }
+  .pagination-status { flex-basis: 100%; }
+  .pagination-size { margin-left: auto; }
+  .pagination-pages button { min-width: 32px; padding-inline: 6px; }
+  .app-shell > header { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
+  .app-shell > header .brand { width: 100%; }
+  .app-shell > header .spacer { display: none; }
   .app-shell main { padding: var(--space-5) var(--space-3); }
   .mail-detail { padding: var(--space-3); }
   .page-header { align-items: stretch; }
