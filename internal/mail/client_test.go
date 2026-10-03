@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/emersion/go-imap"
 )
 
 func TestMessageWithinDaysAcceptsRFC3339AndFiltersOldMail(t *testing.T) {
@@ -37,6 +39,61 @@ func TestMessageWithinDaysAcceptsRFC3339AndFiltersOldMail(t *testing.T) {
 				t.Fatalf("messageWithinDays(%q, %d) = %v, want %v", tt.raw, tt.days, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeRecipientsDeduplicatesCaseAndWhitespace(t *testing.T) {
+	got := normalizeRecipients([]string{" Alpha@iCloud.com ", "alpha@icloud.com", "", "beta@icloud.com"})
+	want := []string{"alpha@icloud.com", "beta@icloud.com"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("normalizeRecipients() = %v, want %v", got, want)
+	}
+}
+
+func TestRecipientSearchCriteriaUsesBalancedOrAndSince(t *testing.T) {
+	now := time.Date(2026, time.October, 3, 12, 0, 0, 0, time.UTC)
+	criteria := recipientSearchCriteria([]string{"a@icloud.com", "b@icloud.com", "c@icloud.com"}, 7, now)
+	if !criteria.Since.Equal(now.AddDate(0, 0, -7)) {
+		t.Fatalf("Since = %v", criteria.Since)
+	}
+	if len(criteria.Or) != 1 || criteria.Or[0][0] == nil || criteria.Or[0][1] == nil {
+		t.Fatalf("criteria.Or = %#v, want nested OR", criteria.Or)
+	}
+}
+
+func TestNormalizeUIDsSortsDeduplicatesAndLimitsNewest(t *testing.T) {
+	got := normalizeUIDs([]uint32{7, 2, 7, 9, 3, 0}, 3)
+	want := []uint32{3, 7, 9}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("normalizeUIDs() = %v, want %v", got, want)
+	}
+}
+
+func TestEnvelopeMatchesRecipientsUsesExactNormalizedAddress(t *testing.T) {
+	envelope := &imap.Envelope{To: []*imap.Address{{MailboxName: "Alpha", HostName: "iCloud.com"}}}
+	if !envelopeMatchesRecipients(envelope, map[string]struct{}{"alpha@icloud.com": {}}) {
+		t.Fatal("exact address did not match")
+	}
+	if envelopeMatchesRecipients(envelope, map[string]struct{}{"pha@icloud.com": {}}) {
+		t.Fatal("substring address matched")
+	}
+	quotedComma := &imap.Envelope{To: []*imap.Address{{MailboxName: "evil,alias@icloud.com,other", HostName: "example.com"}}}
+	if envelopeMatchesRecipients(quotedComma, map[string]struct{}{"alias@icloud.com": {}}) {
+		t.Fatal("comma inside a quoted local-part produced a false HME match")
+	}
+	quotedLeadingSpace := &imap.Envelope{To: []*imap.Address{{MailboxName: " alias", HostName: "icloud.com"}}}
+	if envelopeMatchesRecipients(quotedLeadingSpace, map[string]struct{}{"alias@icloud.com": {}}) {
+		t.Fatal("leading space inside a quoted local-part produced a false HME match")
+	}
+}
+
+func TestScopedMessageOperationsRejectEmptyRecipientSetWithoutConnecting(t *testing.T) {
+	c := &Client{}
+	if _, err := c.GetFullForRecipients(42, nil); !errors.Is(err, ErrMessageOutsideHME) {
+		t.Fatalf("GetFullForRecipients error = %v, want ErrMessageOutsideHME", err)
+	}
+	if err := c.DeleteForRecipients(42, nil); !errors.Is(err, ErrMessageOutsideHME) {
+		t.Fatalf("DeleteForRecipients error = %v, want ErrMessageOutsideHME", err)
 	}
 }
 
@@ -270,6 +327,109 @@ func TestUIDFetchDrainsDuplicateResponses(t *testing.T) {
 	}
 }
 
+func TestDeleteForRecipientsUsesUIDExpungeForOnlyTarget(t *testing.T) {
+	useIMAPTimeouts(t, time.Second, time.Second)
+	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	serverDone := make(chan error, 1)
+	commands := make(chan []string, 1)
+	go serveScopedDelete(ln, serverTLS, commands, serverDone)
+
+	c := newTestClient(t, ln, clientTLS)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(c.forceClose)
+	if err := c.DeleteForRecipients(42, []string{"alias@icloud.com"}); err != nil {
+		t.Fatalf("DeleteForRecipients: %v", err)
+	}
+
+	got := <-commands
+	joined := strings.ToUpper(strings.Join(got, "\n"))
+	if !strings.Contains(joined, "UID STORE 42") {
+		t.Fatalf("commands = %q, missing UID STORE 42", got)
+	}
+	if !strings.Contains(joined, "UID EXPUNGE 42") {
+		t.Fatalf("commands = %q, missing UID EXPUNGE 42", got)
+	}
+	for _, command := range got {
+		fields := strings.Fields(strings.ToUpper(command))
+		if len(fields) > 1 && fields[1] == "EXPUNGE" {
+			t.Fatalf("unsafe unscoped EXPUNGE sent: %q", command)
+		}
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScopedMessageOperationsRejectLeadingSpaceQuotedLocalPart(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		run       func(*testing.T, *Client)
+	}{
+		{
+			name:      "list",
+			operation: "list",
+			run: func(t *testing.T, c *Client) {
+				messages, err := c.FindByRecipients([]string{" alias@icloud.com "}, 10, 0)
+				if err != nil {
+					t.Fatalf("FindByRecipients: %v", err)
+				}
+				if len(messages) != 0 {
+					t.Fatalf("messages = %#v, want no authorized matches", messages)
+				}
+			},
+		},
+		{
+			name:      "detail",
+			operation: "detail",
+			run: func(t *testing.T, c *Client) {
+				message, err := c.GetFullForRecipients(42, []string{" alias@icloud.com "})
+				if !errors.Is(err, ErrMessageOutsideHME) {
+					t.Fatalf("GetFullForRecipients() = %#v, %v; want ErrMessageOutsideHME", message, err)
+				}
+			},
+		},
+		{
+			name:      "delete",
+			operation: "delete",
+			run: func(t *testing.T, c *Client) {
+				if err := c.DeleteForRecipients(42, []string{" alias@icloud.com "}); !errors.Is(err, ErrMessageOutsideHME) {
+					t.Fatalf("DeleteForRecipients() error = %v, want ErrMessageOutsideHME", err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			useIMAPTimeouts(t, time.Second, time.Second)
+			ln, serverTLS, clientTLS := newTestTLSListener(t)
+			serverDone := make(chan error, 1)
+			go serveLeadingSpaceScopedOperation(ln, serverTLS, tc.operation, serverDone)
+
+			c := newTestClient(t, ln, clientTLS)
+			if err := c.Connect(); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			defer func() {
+				c.forceClose()
+				_ = ln.Close()
+				select {
+				case err := <-serverDone:
+					if err != nil {
+						t.Errorf("fake IMAP server: %v", err)
+					}
+				case <-time.After(time.Second):
+					t.Error("fake IMAP server did not stop")
+				}
+			}()
+			tc.run(t, c)
+		})
+	}
+}
+
 func TestClientFetchTimeoutClosesChannels(t *testing.T) {
 	useIMAPTimeouts(t, time.Second, 100*time.Millisecond)
 	ln, serverTLS, clientTLS := newTestTLSListener(t)
@@ -450,6 +610,195 @@ func serveDuplicateUIDFetch(ln net.Listener, serverTLS *tls.Config, release <-ch
 		return
 	}
 	<-release
+	done <- nil
+}
+
+func serveScopedDelete(ln net.Listener, serverTLS *tls.Config, commands chan<- []string, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	if _, err := conn.Write([]byte("* OK [CAPABILITY IMAP4rev1 UIDPLUS] ready\r\n")); err != nil {
+		done <- err
+		return
+	}
+	var seen []string
+	read := func() (string, error) {
+		line, err := reader.ReadString('\n')
+		if err == nil {
+			seen = append(seen, line)
+		}
+		return line, err
+	}
+	login, err := read()
+	if err != nil {
+		done <- err
+		return
+	}
+	if _, err := conn.Write([]byte(imapTag(login) + " OK LOGIN completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	selectCmd, err := read()
+	if err != nil {
+		done <- err
+		return
+	}
+	if _, err := conn.Write([]byte("* 2 EXISTS\r\n" + imapTag(selectCmd) + " OK [READ-WRITE] SELECT completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	fetch, err := read()
+	if err != nil {
+		done <- err
+		return
+	}
+	if strings.Contains(strings.ToUpper(fetch), "CAPABILITY") {
+		if _, err := conn.Write([]byte("* CAPABILITY IMAP4rev1 UIDPLUS\r\n" + imapTag(fetch) + " OK CAPABILITY completed\r\n")); err != nil {
+			done <- err
+			return
+		}
+		fetch, err = read()
+		if err != nil {
+			done <- err
+			return
+		}
+	}
+	envelope := "* 1 FETCH (UID 42 ENVELOPE (\"03-Oct-2026 02:00:00 +0000\" \"subject\" ((NIL NIL \"sender\" \"example.com\")) NIL NIL ((NIL NIL \"alias\" \"icloud.com\")) NIL NIL NIL NIL))\r\n"
+	if _, err := conn.Write([]byte(envelope + imapTag(fetch) + " OK FETCH completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	store, err := read()
+	if err != nil {
+		done <- err
+		return
+	}
+	if strings.Contains(strings.ToUpper(store), "CAPABILITY") {
+		if _, err := conn.Write([]byte("* CAPABILITY IMAP4rev1 UIDPLUS\r\n" + imapTag(store) + " OK CAPABILITY completed\r\n")); err != nil {
+			done <- err
+			return
+		}
+		store, err = read()
+		if err != nil {
+			done <- err
+			return
+		}
+	}
+	if _, err := conn.Write([]byte(imapTag(store) + " OK STORE completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	expunge, err := read()
+	if err != nil {
+		done <- err
+		return
+	}
+	if _, err := conn.Write([]byte("* 1 EXPUNGE\r\n" + imapTag(expunge) + " OK UID EXPUNGE completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	commands <- seen
+	done <- nil
+}
+
+func serveLeadingSpaceScopedOperation(ln net.Listener, serverTLS *tls.Config, operation string, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	write := func(response string) bool {
+		if _, writeErr := conn.Write([]byte(response)); writeErr != nil {
+			done <- writeErr
+			return false
+		}
+		return true
+	}
+	read := func(want string) (string, bool) {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			done <- readErr
+			return "", false
+		}
+		if !strings.Contains(strings.ToUpper(line), want) {
+			done <- fmt.Errorf("received %q, want %s", line, want)
+			return "", false
+		}
+		return line, true
+	}
+
+	if !write("* OK [CAPABILITY IMAP4rev1 UIDPLUS] ready\r\n") {
+		return
+	}
+	login, ok := read("LOGIN")
+	if !ok || !write(imapTag(login)+" OK LOGIN completed\r\n") {
+		return
+	}
+	selectCmd, ok := read("INBOX")
+	if !ok || !write("* 1 EXISTS\r\n"+imapTag(selectCmd)+" OK SELECT completed\r\n") {
+		return
+	}
+	if operation == "list" {
+		search, ok := read("UID SEARCH")
+		if !ok || !write("* SEARCH 42\r\n"+imapTag(search)+" OK SEARCH completed\r\n") {
+			return
+		}
+	}
+
+	fetch, ok := read("UID FETCH 42")
+	if !ok {
+		return
+	}
+	envelope := "ENVELOPE (\"03-Oct-2026 02:00:00 +0000\" \"subject\" ((NIL NIL \"sender\" \"example.com\")) NIL NIL ((NIL NIL \" alias\" \"icloud.com\")) NIL NIL NIL NIL)"
+	response := "* 1 FETCH (UID 42 " + envelope + ")\r\n"
+	if operation != "delete" {
+		body := "From: sender@example.com\r\n" +
+			"To: \" alias\"@icloud.com\r\n" +
+			"Subject: leading space local-part\r\n" +
+			"Content-Type: text/plain; charset=utf-8\r\n\r\nbody"
+		bodyItem := "BODY[]"
+		if operation == "detail" {
+			bodyItem = "RFC822"
+		}
+		response = fmt.Sprintf("* 1 FETCH (UID 42 %s INTERNALDATE \"03-Oct-2026 02:00:00 +0000\" %s {%d}\r\n%s)\r\n", envelope, bodyItem, len(body), body)
+	}
+	if !write(response + imapTag(fetch) + " OK FETCH completed\r\n") {
+		return
+	}
+	// Keep the server connection alive until the operation has consumed the
+	// tagged FETCH response. For delete, also prove rejection happened before
+	// any STORE/EXPUNGE mutation command.
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		done <- err
+		return
+	}
+	line, readErr := reader.ReadString('\n')
+	if operation == "delete" {
+		if line != "" {
+			done <- fmt.Errorf("unauthorized delete sent mutation command %q", line)
+			return
+		}
+		if readErr == nil {
+			done <- fmt.Errorf("expected client connection to close after rejection")
+			return
+		}
+	}
 	done <- nil
 }
 

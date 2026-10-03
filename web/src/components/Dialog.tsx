@@ -29,7 +29,9 @@ export default function Dialog({ title, open, onClose, children, className }: Di
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
         ),
       ).filter((el) => !el.hasAttribute('disabled'))
-    focusables()[0]?.focus()
+    const initialFocus = focusables()[0]
+    if (initialFocus) initialFocus.focus()
+    else node.focus()
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -38,7 +40,11 @@ export default function Dialog({ title, open, onClose, children, className }: Di
       }
       if (e.key !== 'Tab') return
       const items = focusables()
-      if (items.length === 0) return
+      if (items.length === 0) {
+        e.preventDefault()
+        node.focus()
+        return
+      }
       const first = items[0]
       const last = items[items.length - 1]
       const active = document.activeElement
@@ -75,6 +81,7 @@ export default function Dialog({ title, open, onClose, children, className }: Di
     >
       <div
         ref={ref}
+        tabIndex={-1}
         className={['dialog', className].filter(Boolean).join(' ')}
         role="dialog"
         aria-modal="true"

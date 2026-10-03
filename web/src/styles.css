@@ -1004,22 +1004,15 @@ td .cell-secondary {
 
 .inbox-mode-notice { margin-bottom: var(--space-3); }
 .mail-workspace {
-  display: grid;
-  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.4fr);
-  min-height: 560px;
+  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-bg-raised);
 }
 
-.mail-workspace:not(.has-selection) { grid-template-columns: minmax(0, 1fr); }
-.mail-workspace:not(.has-selection) .mail-list { border-right: 0; }
-.mail-workspace:not(.has-selection) .mail-reader { display: none; }
-
 .mail-list {
   min-width: 0;
-  border-right: 1px solid var(--color-border);
   background: var(--color-bg-subtle);
 }
 
@@ -1048,10 +1041,19 @@ td .cell-secondary {
 .mail-list .pagination-size { order: 2; }
 .mail-list .pagination-pages { width: 100%; justify-content: space-between; order: 3; }
 
-.mail-reader { min-width: 0; padding: var(--space-5); overflow-wrap: anywhere; }
-.mail-reader-placeholder { display: grid; height: 100%; place-content: center; justify-items: center; color: var(--color-text-tertiary); }
-.mail-reader-header { padding-bottom: var(--space-4); border-bottom: 1px solid var(--color-border); margin-bottom: var(--space-4); }
-.mail-reader-header h3 { margin: 0 0 var(--space-3); font-size: var(--text-xl); }
+.mail-detail { width: 100%; min-width: 0; padding: var(--space-5); overflow-wrap: anywhere; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-raised); }
+.app-shell .mail-reader-header {
+  position: static;
+  z-index: auto;
+  display: block;
+  padding: 0 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-4);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.mail-reader-header h2 { margin: 0 0 var(--space-3); font-size: var(--text-xl); }
 .mail-reader-header dl { display: grid; gap: var(--space-1); margin: 0; font-size: var(--text-sm); }
 .mail-reader-header dl div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: var(--space-2); }
 .mail-reader-header dt { color: var(--color-text-tertiary); }
@@ -1059,20 +1061,20 @@ td .cell-secondary {
 .mail-reader-actions { display: flex; justify-content: flex-end; margin-top: var(--space-4); }
 .mail-reader-actions button { display: inline-flex; align-items: center; gap: var(--space-1); }
 .mail-summary-only { padding: var(--space-4); border-radius: var(--radius); background: var(--color-bg-subtle); }
-.mail-back-button { display: none; margin-bottom: var(--space-3); }
+.mail-back-button { display: inline-flex; margin-bottom: var(--space-4); }
 
 @media (min-width: 900px) {
-  .mail-workspace:not(.has-selection) .mail-list-item {
+  .mail-list-item {
     grid-template-columns: minmax(180px, 0.7fr) minmax(0, 2fr) auto;
     align-items: center;
     column-gap: var(--space-4);
   }
 
-  .mail-workspace:not(.has-selection) .mail-list-copy {
+  .mail-list-copy {
     grid-column: auto;
   }
 
-  .mail-workspace:not(.has-selection) .mail-list-subject::after {
+  .mail-list-subject::after {
     margin-left: var(--space-2);
     color: var(--color-text-tertiary);
     content: "—";
@@ -1083,12 +1085,7 @@ td .cell-secondary {
   .alias-toolbar,
   .inbox-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .toolbar-actions { grid-column: 1 / -1; }
-  .mail-workspace { display: block; min-height: 0; }
-  .mail-list { border-right: 0; }
-  .mail-reader { display: none; }
-  .mail-workspace.has-selection .mail-list { display: none; }
-  .mail-workspace.has-selection .mail-reader { display: block; }
-  .mail-back-button { display: inline-flex; }
+  .mail-detail { padding: var(--space-4); }
 }
 
 @media (max-width: 600px) {
@@ -1102,6 +1099,7 @@ td .cell-secondary {
   .app-shell header .brand { width: 100%; }
   .app-shell header .spacer { display: none; }
   .app-shell main { padding: var(--space-5) var(--space-3); }
+  .mail-detail { padding: var(--space-3); }
   .page-header { align-items: stretch; }
   .page-header > button { width: 100%; }
 }

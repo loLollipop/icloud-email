@@ -33,6 +33,7 @@ export default function ConfirmDialog({
       title={title}
       open={open}
       onClose={() => {
+        if (busy) return
         setInput('')
         onClose()
       }}
@@ -44,6 +45,7 @@ export default function ConfirmDialog({
           <input
             id="confirm-text"
             value={input}
+            disabled={busy}
             onChange={(e) => setInput(e.target.value)}
             autoComplete="off"
           />
@@ -51,6 +53,7 @@ export default function ConfirmDialog({
       )}
       <div className="form-actions">
         <button
+          disabled={busy}
           onClick={() => {
             setInput('')
             onClose()

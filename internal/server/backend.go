@@ -25,10 +25,11 @@ func (e *BackendError) Error() string { return e.Message }
 
 // InboxQuery 是收件箱查询参数。
 type InboxQuery struct {
-	AccountID string
-	Alias     string
-	Limit     int
-	Days      int
+	AccountID  string
+	Alias      string
+	Recipients []string
+	Limit      int
+	Days       int
 }
 
 // InboxResult 是收件箱查询结果。
@@ -56,8 +57,8 @@ type Backend interface {
 	SetAliasActive(string, string, bool) (bool, error)
 	DeleteAlias(string, string) error
 	ListInbox(InboxQuery) (InboxResult, error)
-	GetMessage(string, uint32) (*mail.FullMessage, error)
-	DeleteMessage(string, uint32) error
+	GetMessage(string, uint32, []string) (*mail.FullMessage, error)
+	DeleteMessage(string, uint32, []string) error
 	Reload() error
 }
 
@@ -274,18 +275,17 @@ func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
 	return nil
 }
 
-// ListInbox 读取收件箱摘要:IMAP (App Password) 优先,Web API (Cookie) 回退。
+// ListInbox reads only messages addressed to the handler-verified HME aliases.
 func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
-	// 优先使用 IMAP 连接池 (App Password 认证,复用长连接)
+	if len(q.Recipients) == 0 {
+		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Messages: []mail.Message{}, Method: "imap"}, nil
+	}
+
 	var imapMessages []mail.Message
 	poolErr := b.mgr.WithMailClient(q.AccountID, func(mc *mail.Client) error {
-		var e error
-		if q.Alias != "" {
-			imapMessages, e = mc.FindByRecipient(q.Alias, q.Limit, q.Days)
-		} else {
-			imapMessages, e = mc.ListInbox(q.Limit, q.Days)
-		}
-		return e
+		var err error
+		imapMessages, err = mc.FindByRecipients(q.Recipients, q.Limit, q.Days)
+		return err
 	})
 	if poolErr == nil {
 		return InboxResult{
@@ -296,29 +296,13 @@ func (b *managerBackend) ListInbox(q InboxQuery) (InboxResult, error) {
 			Method:    "imap",
 		}, nil
 	}
-	// IMAP 失败,继续尝试 Web API
-
-	// 回退到 Web API (Cookie 认证,无需 App Password)
-	wmc, err := b.mgr.WebMailClient(q.AccountID)
-	if err != nil {
-		return InboxResult{}, &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: "无可用邮件客户端: 需要 App Password 或 Cookie"}
-	}
-
-	if q.Alias != "" {
-		messages, err := wmc.FindByAlias(q.Alias, q.Limit)
-		if err != nil {
-			return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
-		}
-		return InboxResult{AccountID: q.AccountID, Alias: q.Alias, Count: len(messages), Messages: messages, Method: "web_api"}, nil
-	}
-	messages, err := wmc.ListInbox(q.Limit)
-	if err != nil {
-		return InboxResult{}, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
-	}
-	return InboxResult{AccountID: q.AccountID, Count: len(messages), Messages: messages, Method: "web_api"}, nil
+	return InboxResult{}, &BackendError{Status: http.StatusServiceUnavailable, Code: "HME_FILTER_UNAVAILABLE", Message: "隐私别名邮件筛选暂不可用，请配置或检查 IMAP"}
 }
 
-func (b *managerBackend) GetMessage(accountID string, uid uint32) (*mail.FullMessage, error) {
+func (b *managerBackend) GetMessage(accountID string, uid uint32, recipients []string) (*mail.FullMessage, error) {
+	if len(recipients) == 0 {
+		return nil, messageNotFoundError()
+	}
 	mc, err := b.mgr.MailClient(accountID)
 	if err != nil {
 		return nil, mapAccountErr(err)
@@ -327,14 +311,20 @@ func (b *managerBackend) GetMessage(accountID string, uid uint32) (*mail.FullMes
 		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件失败"}
 	}
 	defer mc.Disconnect()
-	message, err := mc.GetFull(uid)
+	message, err := mc.GetFullForRecipients(uid, recipients)
 	if err != nil {
+		if errors.Is(err, mail.ErrMessageOutsideHME) {
+			return nil, messageNotFoundError()
+		}
 		return nil, &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "读取邮件详情失败"}
 	}
 	return message, nil
 }
 
-func (b *managerBackend) DeleteMessage(accountID string, uid uint32) error {
+func (b *managerBackend) DeleteMessage(accountID string, uid uint32, recipients []string) error {
+	if len(recipients) == 0 {
+		return messageNotFoundError()
+	}
 	mc, err := b.mgr.MailClient(accountID)
 	if err != nil {
 		return mapAccountErr(err)
@@ -343,10 +333,17 @@ func (b *managerBackend) DeleteMessage(accountID string, uid uint32) error {
 		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
 	}
 	defer mc.Disconnect()
-	if err := mc.Delete(uid); err != nil {
+	if err := mc.DeleteForRecipients(uid, recipients); err != nil {
+		if errors.Is(err, mail.ErrMessageOutsideHME) {
+			return messageNotFoundError()
+		}
 		return &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "删除邮件失败"}
 	}
 	return nil
+}
+
+func messageNotFoundError() *BackendError {
+	return &BackendError{Status: http.StatusNotFound, Code: "MESSAGE_NOT_FOUND", Message: "邮件不存在"}
 }
 
 // Reload 重新加载配置。

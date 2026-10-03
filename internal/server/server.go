@@ -194,10 +194,8 @@ func (s *Server) createAliasHandler(c *gin.Context) {
 // 核心接口 2: 读取邮件
 //   GET /api/inbox?account_id=acc_xxx[&alias=xxx@icloud.com][&limit=20][&days=7]
 //
-//   - 不传 alias: 返回该账号收件箱最近邮件
+//   - 不传 alias: 返回该账号所有 HME 别名收到的邮件
 //   - 传 alias:   只返回发给该 HME 别名的邮件
-//
-//   认证优先级: IMAP (App Password) 优先 > Web API (Cookie) 回退
 // ====================================================================
 
 func (s *Server) listInboxHandler(c *gin.Context) {
@@ -207,6 +205,11 @@ func (s *Server) listInboxHandler(c *gin.Context) {
 		return
 	}
 	alias := strings.TrimSpace(c.Query("alias"))
+	scope := c.Query("scope")
+	if scope != "" && scope != "hme_aliases" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: scope 必须为 hme_aliases")
+		return
+	}
 	limit, err := parseInboxInt(c.DefaultQuery("limit", "20"), 1, 100)
 	if err != nil {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: limit 需为 1-100 的整数")
@@ -218,11 +221,38 @@ func (s *Server) listInboxHandler(c *gin.Context) {
 		return
 	}
 
+	aliases, err := s.accountAliases(accountID)
+	if err != nil {
+		backendFail(c, err)
+		return
+	}
+	recipients := make([]string, 0, len(aliases))
+	if alias != "" {
+		for _, item := range aliases {
+			if strings.EqualFold(strings.TrimSpace(item.Email), alias) {
+				alias = strings.TrimSpace(item.Email)
+				recipients = append(recipients, alias)
+				break
+			}
+		}
+		if len(recipients) == 0 {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: alias 不属于该账号")
+			return
+		}
+	} else {
+		for _, item := range aliases {
+			if email := strings.TrimSpace(item.Email); email != "" {
+				recipients = append(recipients, email)
+			}
+		}
+	}
+
 	result, err := s.be.ListInbox(InboxQuery{
-		AccountID: accountID,
-		Alias:     alias,
-		Limit:     limit,
-		Days:      days,
+		AccountID:  accountID,
+		Alias:      alias,
+		Recipients: recipients,
+		Limit:      limit,
+		Days:       days,
 	})
 	if err != nil {
 		backendFail(c, err)
@@ -238,7 +268,16 @@ func (s *Server) getMessageHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "account_id 或邮件 ID 无效")
 		return
 	}
-	message, err := s.be.GetMessage(accountID, uint32(uid))
+	recipients, err := s.accountAliasRecipients(accountID)
+	if err != nil {
+		backendFail(c, err)
+		return
+	}
+	if len(recipients) == 0 {
+		backendFail(c, messageNotFoundError())
+		return
+	}
+	message, err := s.be.GetMessage(accountID, uint32(uid), recipients)
 	if err != nil {
 		backendFail(c, err)
 		return
@@ -253,11 +292,40 @@ func (s *Server) deleteMessageHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "account_id 或邮件 ID 无效")
 		return
 	}
-	if err := s.be.DeleteMessage(accountID, uint32(uid)); err != nil {
+	recipients, err := s.accountAliasRecipients(accountID)
+	if err != nil {
+		backendFail(c, err)
+		return
+	}
+	if len(recipients) == 0 {
+		backendFail(c, messageNotFoundError())
+		return
+	}
+	if err := s.be.DeleteMessage(accountID, uint32(uid), recipients); err != nil {
 		backendFail(c, err)
 		return
 	}
 	ok(c, gin.H{"id": c.Param("message_id")})
+}
+
+func (s *Server) accountAliases(accountID string) ([]hme.Alias, error) {
+	return s.aliases.get(accountID, func() ([]hme.Alias, error) {
+		return s.be.ListAliases(accountID)
+	})
+}
+
+func (s *Server) accountAliasRecipients(accountID string) ([]string, error) {
+	aliases, err := s.accountAliases(accountID)
+	if err != nil {
+		return nil, err
+	}
+	recipients := make([]string, 0, len(aliases))
+	for _, item := range aliases {
+		if email := strings.TrimSpace(item.Email); email != "" {
+			recipients = append(recipients, email)
+		}
+	}
+	return recipients, nil
 }
 
 // parseInboxInt 解析整数参数,非法或越界返回错误(不再静默变成 0)。

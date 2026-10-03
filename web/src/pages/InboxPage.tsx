@@ -11,6 +11,7 @@ import { useToast } from '../components/ToastProvider'
 import { IconKey, IconMail, IconRefresh, IconSearch, IconTrash } from '../components/icons'
 
 type SearchField = 'all' | 'subject' | 'from' | 'to'
+type DeleteTarget = { accountId: string; message: InboxMessage }
 
 function formatDate(raw: string): string {
   const date = new Date(raw)
@@ -19,7 +20,7 @@ function formatDate(raw: string): string {
 }
 
 function inboxQuery(accountID: string, alias: string, loadRange: number, days: number): string {
-  const params = new URLSearchParams({ account_id: accountID })
+  const params = new URLSearchParams({ account_id: accountID, scope: 'hme_aliases' })
   if (alias) params.set('alias', alias)
   params.set('limit', String(loadRange))
   params.set('days', String(days))
@@ -59,11 +60,13 @@ export default function InboxPage() {
   const [selected, setSelected] = useState<InboxMessage | null>(null)
   const [detail, setDetail] = useState<FullMessage | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [deleteFor, setDeleteFor] = useState<InboxMessage | null>(null)
+  const [deleteFor, setDeleteFor] = useState<DeleteTarget | null>(null)
   const [deleting, setDeleting] = useState(false)
   const inboxRequestRef = useRef(0)
   const detailAbortRef = useRef<AbortController | null>(null)
   const detailRequestRef = useRef(0)
+  const currentAccountRef = useRef(accountId)
+  const selectedRef = useRef<InboxMessage | null>(null)
   const { show } = useToast()
 
   function clearSelection() {
@@ -71,18 +74,22 @@ export default function InboxPage() {
     detailAbortRef.current?.abort()
     detailAbortRef.current = null
     setDetailLoading(false)
+    selectedRef.current = null
     setSelected(null)
     setDetail(null)
   }
 
   async function openMessage(message: InboxMessage) {
+    detailAbortRef.current?.abort()
+    detailAbortRef.current = null
+    const requestID = ++detailRequestRef.current
+    selectedRef.current = message
     setSelected(message)
     setDetail(null)
+    setDetailLoading(false)
     if (result?.method !== 'imap') return
-    detailAbortRef.current?.abort()
     const controller = new AbortController()
     detailAbortRef.current = controller
-    const requestID = ++detailRequestRef.current
     setDetailLoading(true)
     try {
       const data = await request<FullMessage>(`/api/inbox/${encodeURIComponent(message.id)}?account_id=${encodeURIComponent(accountId)}`, { signal: controller.signal })
@@ -100,13 +107,14 @@ export default function InboxPage() {
 
   async function deleteMessage() {
     if (!deleteFor || result?.method !== 'imap') return
+    const target = deleteFor
     setDeleting(true)
     try {
-      await request(`/api/inbox/${encodeURIComponent(deleteFor.id)}?account_id=${encodeURIComponent(accountId)}`, { method: 'DELETE' })
-      setDeleteFor(null)
-      clearSelection()
+      await request(`/api/inbox/${encodeURIComponent(target.message.id)}?account_id=${encodeURIComponent(target.accountId)}`, { method: 'DELETE' })
+      setDeleteFor((current) => current === target ? null : current)
+      if (currentAccountRef.current === target.accountId && selectedRef.current?.id === target.message.id) clearSelection()
       show('邮件已删除')
-      invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
+      invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(target.accountId))
       setRetryKey((key) => key + 1)
     } catch (err) {
       show(err instanceof ApiError ? err.message : '删除邮件失败')
@@ -125,6 +133,7 @@ export default function InboxPage() {
         const queryId = searchParams.get('account_id')
         const target = data.find((account) => account.id === queryId)?.id ?? data[0]?.id ?? ''
         setAccountId(target)
+        currentAccountRef.current = target
         if (!target) setLoading(false)
         if (target) {
           const currentFilters = draftFiltersRef.current
@@ -177,7 +186,11 @@ export default function InboxPage() {
       })
       .catch((err) => {
         if (cancelled || requestID !== inboxRequestRef.current) return
-        if (!cached) { setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态'); setResult(null) }
+        invalidateResource(key)
+        setDeleteFor(null)
+        clearSelection()
+        setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        setResult(null)
       })
       .finally(() => { if (!cancelled && requestID === inboxRequestRef.current) setLoading(false) })
     return () => { cancelled = true }
@@ -218,6 +231,7 @@ export default function InboxPage() {
 
   function handleAccountChange(id: string) {
     accountChangedRef.current = true
+    currentAccountRef.current = id
     setAccountId(id)
     setAlias('')
     // 丢弃尚未应用的范围草稿，避免控件值与新账号的实际查询条件不一致。
@@ -235,12 +249,36 @@ export default function InboxPage() {
 
   const isImap = result?.method === 'imap'
 
+  if (selected) {
+    const readStatus = detailLoading ? '正在读取' : isImap ? (detail ? '已读取' : '读取失败') : '摘要模式'
+    return (
+      <section className="inbox-page inbox-detail-page">
+        <article className="mail-detail" aria-label="邮件阅读区">
+          <button type="button" className="mail-back-button" onClick={clearSelection}>← 返回全部邮件</button>
+          <header className="mail-reader-header">
+            <h2>{selected.subject || '（无主题）'}</h2>
+            <dl>
+              <div><dt>发件人</dt><dd>{selected.from || '（未知发件人）'}</dd></div>
+              <div><dt>收件人</dt><dd>{selected.to || '—'}</dd></div>
+              <div><dt>日期</dt><dd>{formatDate(selected.date)}</dd></div>
+              <div><dt>读取状态</dt><dd>{readStatus}</dd></div>
+            </dl>
+          </header>
+          {detailLoading && <p className="hint" role="status">读取中…</p>}
+          {!isImap && <div className="mail-summary-only"><p>{selected.preview || '暂无摘要'}</p><p className="hint">当前仅显示邮件摘要；配置 App 专用密码后可阅读正文和删除。</p></div>}
+          {detail && <>{detail.body_truncated && <p className="alert-info mail-truncated-notice">邮件正文过长，已截断显示。</p>}{detail.html_body ? <MailHtmlFrame html={detail.html_body} /> : <pre className="mail-body">{detail.body || '无正文'}</pre>}<div className="mail-reader-actions"><button className="danger" onClick={() => setDeleteFor({ accountId, message: detail })}><IconTrash size={14} />删除邮件</button></div></>}
+        </article>
+        {deleteFor && isImap && <ConfirmDialog title="删除邮件" message="邮件将从收件箱中永久删除。" open busy={deleting} onClose={() => setDeleteFor(null)} onConfirm={() => void deleteMessage()} />}
+      </section>
+    )
+  }
+
   return (
     <section className="inbox-page">
-      <div className="page-header"><div className="page-title"><h2>收件箱</h2><p>在已加载的邮件窗口中查找并阅读邮件</p></div></div>
+      <div className="page-header"><div className="page-title"><h2>收件箱</h2><p>仅展示当前账号所有 iCloud 隐私别名收到的邮件</p></div></div>
       <div className="inbox-toolbar card">
         <div className="toolbar-field"><label htmlFor="inbox-account">账号</label><select id="inbox-account" value={accountId} onChange={(event) => handleAccountChange(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></div>
-        <div className="toolbar-field"><label htmlFor="inbox-alias">别名</label><select id="inbox-alias" value={alias} onChange={(event) => { const nextAlias = event.target.value; setAlias(nextAlias); draftFiltersRef.current = { alias: nextAlias, loadRange, days }; setPage(1) }}><option value="">全部</option>{aliases.map((item) => <option key={item.anonymousId} value={item.email}>{item.email}</option>)}</select></div>
+        <div className="toolbar-field"><label htmlFor="inbox-alias">别名</label><select id="inbox-alias" value={alias} onChange={(event) => { const nextAlias = event.target.value; setAlias(nextAlias); draftFiltersRef.current = { alias: nextAlias, loadRange, days }; setPage(1) }}><option value="">全部 iCloud 隐私别名</option>{aliases.map((item) => <option key={item.anonymousId} value={item.email}>{item.email}</option>)}</select></div>
         <div className="toolbar-field"><label htmlFor="inbox-days">时间范围</label><select id="inbox-days" value={days} onChange={(event) => { const nextDays = Number(event.target.value); setDays(nextDays); draftFiltersRef.current = { alias, loadRange, days: nextDays }; setPage(1) }}>{[1, 7, 30, 90].map((value) => <option key={value} value={value}>{value} 天</option>)}</select></div>
         <div className="toolbar-field"><label htmlFor="inbox-limit">加载范围</label><select id="inbox-limit" value={loadRange} onChange={(event) => { const nextLoadRange = Number(event.target.value); setLoadRange(nextLoadRange); draftFiltersRef.current = { alias, loadRange: nextLoadRange, days }; setPage(1) }}><option value={20}>最近 20 封</option><option value={50}>最近 50 封</option><option value={100}>最近 100 封</option></select></div>
         <div className="toolbar-actions"><button className="primary" onClick={applyFilters}><IconRefresh size={16} />应用筛选 / 刷新</button></div>
@@ -253,17 +291,13 @@ export default function InboxPage() {
       <AsyncState loading={loading} error={error} empty={!result || result.messages.length === 0} emptyText="当前窗口暂无邮件" onRetry={() => { if (accountId) invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId)); setLoading(true); setRetryKey((key) => key + 1) }}>
         {result && result.messages.length > 0 && <>
           <div className="inbox-summary"><span>已加载 {result.messages.length} 封 / 当前窗口</span><span className={isImap ? 'badge badge-info' : 'badge badge-neutral'}>{isImap ? <IconKey size={12} /> : <IconMail size={12} />}{isImap ? 'IMAP 正文模式' : 'Web API 摘要模式'}</span></div>
-          {!isImap && <div className="alert-info inbox-mode-notice">Web API 仅提供当前摘要，时间范围及别名筛选可能不完整；配置 App 专用密码后可阅读正文和删除。</div>}
-          <div className={`mail-workspace${selected ? ' has-selection' : ''}`}>
+          {!isImap && <div className="alert-info inbox-mode-notice">当前仅提供邮件摘要；配置 App 专用密码后可阅读正文和删除。</div>}
+          <div className="mail-workspace">
             <div className="mail-list" aria-label="邮件列表">
               {visibleMessages.length === 0 && <div className="empty-state">当前已加载邮件中没有匹配项</div>}
-              {visibleMessages.map((message) => <button type="button" key={message.id} className={`mail-list-item${selected?.id === message.id ? ' is-selected' : ''}`} aria-label={message.subject || '（无主题）'} aria-pressed={selected?.id === message.id} onClick={() => void openMessage(message)}><strong className="mail-list-sender">{message.from || '（未知发件人）'}</strong><span className="mail-list-copy"><span className="mail-list-subject">{message.subject || '（无主题）'}</span><span className="mail-list-preview">{message.preview || '—'}</span></span><time className="mail-list-date" dateTime={message.date}>{formatDate(message.date)}</time></button>)}
+              {visibleMessages.map((message) => <button type="button" key={message.id} className="mail-list-item" aria-label={message.subject || '（无主题）'} onClick={() => void openMessage(message)}><strong className="mail-list-sender">{message.from || '（未知发件人）'}</strong><span className="mail-list-copy"><span className="mail-list-subject">{message.subject || '（无主题）'}</span><span className="mail-list-preview">{message.preview || '—'}</span></span><time className="mail-list-date" dateTime={message.date}>{formatDate(message.date)}</time></button>)}
               <Pagination page={currentPage} pageSize={pageSize} totalItems={filteredMessages.length} onPageChange={(next) => { setPage(next); clearSelection() }} onPageSizeChange={(size) => { setPageSize(size); setPage(1); clearSelection() }} pageSizeOptions={[10, 20, 50]} label="当前已加载邮件分页" />
             </div>
-            <article className="mail-reader" aria-label="邮件阅读区">
-              {!selected && <div className="mail-reader-placeholder"><IconMail size={32} /><p>选择一封邮件查看内容</p></div>}
-              {selected && <><button type="button" className="mail-back-button" onClick={clearSelection}>← 返回列表</button><header className="mail-reader-header"><h3>{selected.subject || '（无主题）'}</h3><dl><div><dt>发件人</dt><dd>{selected.from}</dd></div><div><dt>收件人</dt><dd>{selected.to || '—'}</dd></div><div><dt>日期</dt><dd>{formatDate(selected.date)}</dd></div></dl></header>{detailLoading && <p className="hint" role="status">读取中…</p>}{!isImap && <div className="mail-summary-only"><p>{selected.preview || '暂无摘要'}</p><p className="hint">配置 App 专用密码后可阅读正文和删除；当前摘要的时间范围及别名筛选可能不完整。</p></div>}{detail && <>{detail.body_truncated && <p className="alert-info mail-truncated-notice">邮件正文过长，已截断显示。</p>}{detail.html_body ? <MailHtmlFrame html={detail.html_body} /> : <pre className="mail-body">{detail.body || '无正文'}</pre>}<div className="mail-reader-actions"><button className="danger" onClick={() => setDeleteFor(detail)}><IconTrash size={14} />删除邮件</button></div></>}</>}
-            </article>
           </div>
         </>}
       </AsyncState>

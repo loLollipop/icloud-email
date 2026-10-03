@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,19 @@ func (c *blockingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 type headersThenBlockingHTTPClient struct {
 	tls_client.HttpClient
+}
+
+type staticHTTPClient struct {
+	tls_client.HttpClient
+	body string
+}
+
+func (c *staticHTTPClient) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+	}, nil
 }
 
 type partialDeadlineBody struct {
@@ -144,5 +159,105 @@ func TestRequestOrigin(t *testing.T) {
 				t.Fatalf("requestOrigin(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseAliasListStrictAuthorizationSource(t *testing.T) {
+	t.Run("deleted excluded and inactive retained", func(t *testing.T) {
+		body := `{
+			"success": true,
+			"result": {
+				"hmeEmails": [
+					{"hme":"active@icloud.com","anonymousId":"active","label":"Active","isActive":true},
+					{"hme":"inactive@icloud.com","anonymousId":"inactive","label":"Inactive","isActive":false},
+					{"hme":"state-inactive@icloud.com","anonymousId":"state-inactive","state":"inactive"},
+					{"hme":"deleted@icloud.com","anonymousId":"deleted","status":"deleted","isActive":false}
+				]
+			}
+		}`
+		aliases, err := parseAliasList(body)
+		if err != nil {
+			t.Fatalf("parseAliasList() error = %v", err)
+		}
+		if len(aliases) != 3 {
+			t.Fatalf("aliases = %#v, want three non-deleted entries", aliases)
+		}
+		got := make(map[string]bool, len(aliases))
+		for _, alias := range aliases {
+			got[alias.Email] = alias.Active
+		}
+		want := map[string]bool{
+			"active@icloud.com":         true,
+			"inactive@icloud.com":       false,
+			"state-inactive@icloud.com": false,
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("alias states = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("real empty list succeeds", func(t *testing.T) {
+		aliases, err := parseAliasList(`{"success":true,"result":{"hmeEmails":[]}}`)
+		if err != nil {
+			t.Fatalf("parseAliasList() error = %v", err)
+		}
+		if aliases == nil || len(aliases) != 0 {
+			t.Fatalf("aliases = %#v, want non-nil empty list", aliases)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "business failure",
+			body: `{"success":false,"error":{"errorMessage":"session expired"},"result":{"hmeEmails":[]}}`,
+		},
+		{
+			name: "missing success",
+			body: `{"result":{"hmeEmails":[]}}`,
+		},
+		{
+			name: "unrecognized structure",
+			body: `{"success":true,"result":{"aliases":[]}}`,
+		},
+		{
+			name: "unrelated object array",
+			body: `{"success":true,"result":{"accounts":[{"email":"victim@icloud.com"}]}}`,
+		},
+		{
+			name: "generic email field inside named array",
+			body: `{"success":true,"result":{"hmeEmails":[{"email":"victim@icloud.com","isActive":true}]}}`,
+		},
+		{
+			name: "invalid json",
+			body: `{"success":`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			aliases, err := parseAliasList(tc.body)
+			if err == nil {
+				t.Fatalf("parseAliasList() = %#v, nil error; want fail-closed error", aliases)
+			}
+			if aliases != nil {
+				t.Fatalf("aliases = %#v, want nil on malformed response", aliases)
+			}
+		})
+	}
+}
+
+func TestListAliasesPropagatesStrictParseError(t *testing.T) {
+	client := &Client{
+		Cookies:    map[string]string{},
+		httpc:      &staticHTTPClient{body: `{"success":true,"result":{"accounts":[{"email":"victim@icloud.com"}]}}`},
+		serviceURL: "https://p123-maildomainws.icloud.com",
+	}
+	aliases, err := client.ListAliases()
+	if err == nil {
+		t.Fatalf("ListAliases() = %#v, nil error; want strict parse error", aliases)
+	}
+	if aliases != nil {
+		t.Fatalf("aliases = %#v, want nil after parse failure", aliases)
 	}
 }

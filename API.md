@@ -248,15 +248,16 @@ X-CSRF-Token: <token>
 ### 13. 读取邮件
 
 ```http
-GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
+GET /api/inbox?account_id=acc_1&scope=hme_aliases&alias=xyz123@icloud.com&limit=20&days=7
 ```
 
 - `account_id` 必填
-- `alias` 可选，只返回发给该别名的邮件
+- `scope` 建议显式传 `hme_aliases`；缺省时服务端仍采用相同的安全范围
+- `alias` 可选；传入时只返回发给该账号所属别名的邮件，不传时返回该账号全部 iCloud 隐私别名（包括已停用但仍存在的别名）的邮件并集
 - `limit` 1–100（默认 20）
 - `days` 1–90（默认 7）；非法整数直接 `400 VALIDATION_ERROR`
 
-**响应（IMAP 优先，Web API 回退）：**
+**响应（IMAP 精确按收件人筛选）：**
 
 ```json
 {
@@ -280,7 +281,7 @@ GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
 }
 ```
 
-`method` 为 `imap` 或 `web_api`。IMAP 路径支持服务端按收件人搜索；Web API 路径拉取后本地过滤。
+生产后端仅返回服务端按已验证 HME 别名集合过滤的 IMAP 结果。无法安全筛选时返回 `503 HME_FILTER_UNAVAILABLE`，不会回退读取 Web API 或未过滤的原始收件箱。未知或不属于该账号的 `alias` 返回 `400 VALIDATION_ERROR`。
 
 ### 14. 列出别名
 
@@ -364,16 +365,16 @@ curl -b cookies.txt -X POST "$BASE/api/create" \
   -d '{"account_id":"acc_1","label":"GitHub"}'
 
 # 6. 读取邮件
-curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
+curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&scope=hme_aliases&limit=10"
 ```
 
 ---
 
 ## 认证方式（iCloud 账号侧）
 
-### Cookie 认证（功能最完整）
+### Cookie 认证（别名管理）
 
-用于创建/停用/激活/删除别名、读取邮件（Web API 回退）。
+用于创建/停用/激活/删除别名；读取邮件需要 IMAP，以确保只返回 HME 别名邮件。
 
 **获取方式：**
 1. 浏览器登录 [icloud.com](https://www.icloud.com) 或 [icloud.com.cn](https://www.icloud.com.cn) (国区)
@@ -384,17 +385,19 @@ curl -b cookies.txt "$BASE/api/inbox?account_id=acc_1&limit=10"
 
 **有效期：** 约 24 小时
 
-### App Password 认证（IMAP 优先读邮件）
+### App Password 认证（IMAP 读邮件）
 
-用于 IMAP 读取邮件（优先路径，支持服务端按收件人搜索）。在 [appleid.apple.com](https://appleid.apple.com) → 登录和安全 → App 专用密码 生成。
+用于 IMAP 读取邮件（唯一生产读信路径，支持服务端按 HME 收件人搜索和精确复核）。在 [appleid.apple.com](https://appleid.apple.com) → 登录和安全 → App 专用密码 生成。
 
 ---
 
 ## 技术说明
 
-**Web API 路径** (`internal/mail/web_client.go`)：
+**保留的 Web API 客户端** (`internal/mail/web_client.go`)：
 1. 调用 `setup.icloud.com.cn/setup/ws/1/validate` 获取 `mccgateway` URL
 2. 调用 `mccgateway/mailws2/v1/thread/search` 读取邮件
+
+该摘要接口不能可靠证明收件人，因此生产 HME 收件箱不会使用它作为 IMAP 回退。
 
 **⚠️ 已知坑：**
 - `validate` 返回的 mccgateway URL 可能带 `:443` 端口，tls-client 的 cookie jar 按不带端口的 host 存储 cookie，带端口请求时 cookie 无法附加导致 403；**解决：** 解析 URL 后剥离端口号

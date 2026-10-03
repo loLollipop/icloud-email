@@ -39,14 +39,22 @@ type fakeBackend struct {
 	removedOK    bool
 	removedErr   error
 
-	aliasActID     string
-	aliasActActive bool
-	aliasActErr    error
-	aliasDeleteID  string
-	aliasDeleteErr error
-	aliasListCalls int
-	listInboxQuery InboxQuery
-	reloadCount    int
+	aliasActID              string
+	aliasActActive          bool
+	aliasActErr             error
+	aliasDeleteID           string
+	aliasDeleteErr          error
+	aliasListCalls          int
+	aliasListErr            error
+	listInboxCalls          int
+	listInboxQuery          InboxQuery
+	getMessageCalls         int
+	getMessageRecipients    []string
+	getMessageErr           error
+	deleteMessageCalls      int
+	deleteMessageRecipients []string
+	deleteMessageErr        error
+	reloadCount             int
 }
 
 func (f *fakeBackend) ListAccounts() []account.Summary { return f.accounts }
@@ -117,7 +125,7 @@ func (f *fakeBackend) CreateAlias(accountID, label string) (*hme.CreateResult, e
 
 func (f *fakeBackend) ListAliases(accountID string) ([]hme.Alias, error) {
 	f.aliasListCalls++
-	return f.aliases, nil
+	return f.aliases, f.aliasListErr
 }
 
 func (f *fakeBackend) SetAliasActive(accountID, anonymousID string, active bool) (bool, error) {
@@ -131,15 +139,22 @@ func (f *fakeBackend) DeleteAlias(accountID, anonymousID string) error {
 }
 
 func (f *fakeBackend) ListInbox(q InboxQuery) (InboxResult, error) {
+	f.listInboxCalls++
 	f.listInboxQuery = q
 	return f.inbox, nil
 }
 
-func (f *fakeBackend) GetMessage(accountID string, uid uint32) (*mail.FullMessage, error) {
-	return &mail.FullMessage{Message: mail.Message{ID: fmt.Sprint(uid)}}, nil
+func (f *fakeBackend) GetMessage(accountID string, uid uint32, recipients []string) (*mail.FullMessage, error) {
+	f.getMessageCalls++
+	f.getMessageRecipients = append([]string(nil), recipients...)
+	return &mail.FullMessage{Message: mail.Message{ID: fmt.Sprint(uid)}}, f.getMessageErr
 }
 
-func (f *fakeBackend) DeleteMessage(accountID string, uid uint32) error { return nil }
+func (f *fakeBackend) DeleteMessage(accountID string, uid uint32, recipients []string) error {
+	f.deleteMessageCalls++
+	f.deleteMessageRecipients = append([]string(nil), recipients...)
+	return f.deleteMessageErr
+}
 
 func (f *fakeBackend) Reload() error {
 	f.reloadCount++
@@ -295,4 +310,144 @@ func do(t *testing.T, req *http.Request) (int, string, []*http.Cookie) {
 		t.Fatal(err)
 	}
 	return resp.StatusCode, string(raw), resp.Cookies()
+}
+
+func authedInboxRequest(t *testing.T, ts *httptest.Server, path string) (int, string) {
+	t.Helper()
+	session, _ := login(t, ts, "admin-pass-2026-strong")
+	req := authedReq(t, ts, http.MethodGet, path, "")
+	req.AddCookie(&http.Cookie{Name: "hme_session", Value: session})
+	status, body, _ := do(t, req)
+	return status, body
+}
+
+func TestListInboxHandlerScopesAllAliasesIncludingInactive(t *testing.T) {
+	fake := &fakeBackend{
+		aliases: []hme.Alias{
+			{Email: "active@icloud.com", Active: true},
+			{Email: "inactive@icloud.com", Active: false},
+		},
+		inbox: InboxResult{Messages: []mail.Message{}, Method: "imap"},
+	}
+	_, ts := newTestServer(fake)
+	defer ts.Close()
+
+	status, _ := authedInboxRequest(t, ts, "/api/inbox?account_id=acc_1&scope=hme_aliases&limit=20&days=7")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	want := []string{"active@icloud.com", "inactive@icloud.com"}
+	if fmt.Sprint(fake.listInboxQuery.Recipients) != fmt.Sprint(want) {
+		t.Fatalf("recipients = %v, want %v", fake.listInboxQuery.Recipients, want)
+	}
+}
+
+func TestListInboxHandlerRejectsUnknownAliasWithoutBackendRead(t *testing.T) {
+	fake := &fakeBackend{aliases: []hme.Alias{{Email: "known@icloud.com", Active: true}}}
+	_, ts := newTestServer(fake)
+	defer ts.Close()
+
+	status, body := authedInboxRequest(t, ts, "/api/inbox?account_id=acc_1&alias=other%40icloud.com")
+	if status != http.StatusBadRequest || !strings.Contains(body, "VALIDATION_ERROR") {
+		t.Fatalf("response = %d %s, want 400 VALIDATION_ERROR", status, body)
+	}
+	if fake.listInboxCalls != 0 {
+		t.Fatalf("ListInbox calls = %d, want 0", fake.listInboxCalls)
+	}
+}
+
+func TestListInboxHandlerFailsClosedWhenAliasesUnavailable(t *testing.T) {
+	fake := &fakeBackend{aliasListErr: &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "获取别名失败"}}
+	_, ts := newTestServer(fake)
+	defer ts.Close()
+
+	status, body := authedInboxRequest(t, ts, "/api/inbox?account_id=acc_1")
+	if status != http.StatusBadGateway || !strings.Contains(body, "UPSTREAM_FAILURE") {
+		t.Fatalf("response = %d %s, want alias error", status, body)
+	}
+	if fake.listInboxCalls != 0 {
+		t.Fatalf("ListInbox calls = %d, want 0", fake.listInboxCalls)
+	}
+}
+
+func TestMessageHandlersScopeDetailAndDeleteToAllAccountAliases(t *testing.T) {
+	fake := &fakeBackend{aliases: []hme.Alias{
+		{Email: "active@icloud.com", Active: true},
+		{Email: "inactive@icloud.com", Active: false},
+	}}
+	_, ts := newTestServer(fake)
+	defer ts.Close()
+
+	status, _ := authedInboxRequest(t, ts, "/api/inbox/42?account_id=acc_1")
+	if status != http.StatusOK {
+		t.Fatalf("detail status = %d, want 200", status)
+	}
+	want := []string{"active@icloud.com", "inactive@icloud.com"}
+	if fmt.Sprint(fake.getMessageRecipients) != fmt.Sprint(want) {
+		t.Fatalf("detail recipients = %v, want %v", fake.getMessageRecipients, want)
+	}
+
+	session, csrf := login(t, ts, "admin-pass-2026-strong")
+	req := authedReq(t, ts, http.MethodDelete, "/api/inbox/42?account_id=acc_1", "")
+	req.AddCookie(&http.Cookie{Name: "hme_session", Value: session})
+	req.Header.Set("X-CSRF-Token", csrf)
+	status, _, _ = do(t, req)
+	if status != http.StatusOK {
+		t.Fatalf("delete status = %d, want 200", status)
+	}
+	if fmt.Sprint(fake.deleteMessageRecipients) != fmt.Sprint(want) {
+		t.Fatalf("delete recipients = %v, want %v", fake.deleteMessageRecipients, want)
+	}
+}
+
+func TestMessageHandlersFailClosedBeforeBackendWhenAliasScopeUnavailable(t *testing.T) {
+	tests := []struct {
+		name       string
+		fake       *fakeBackend
+		wantStatus int
+	}{
+		{name: "empty alias set", fake: &fakeBackend{}, wantStatus: http.StatusNotFound},
+		{name: "alias load error", fake: &fakeBackend{aliasListErr: &BackendError{Status: http.StatusBadGateway, Code: "UPSTREAM_FAILURE", Message: "获取别名失败"}}, wantStatus: http.StatusBadGateway},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ts := newTestServer(tc.fake)
+			defer ts.Close()
+
+			status, _ := authedInboxRequest(t, ts, "/api/inbox/42?account_id=acc_1")
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if tc.fake.getMessageCalls != 0 {
+				t.Fatalf("GetMessage calls = %d, want 0", tc.fake.getMessageCalls)
+			}
+		})
+	}
+}
+
+func TestManagerBackendListInboxEmptyRecipientsReturnsEmpty(t *testing.T) {
+	result, err := (&managerBackend{}).ListInbox(InboxQuery{AccountID: "acc_1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Count != 0 || len(result.Messages) != 0 || result.Method != "imap" {
+		t.Fatalf("result = %#v, want safe empty IMAP result", result)
+	}
+}
+
+func TestManagerBackendListInboxReturnsStableErrorWhenFilteredIMAPUnavailable(t *testing.T) {
+	mgr, err := account.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	_, err = (&managerBackend{mgr: mgr}).ListInbox(InboxQuery{
+		AccountID:  "missing",
+		Recipients: []string{"alias@icloud.com"},
+	})
+	backendErr := asBackendError(err)
+	if backendErr.Status != http.StatusServiceUnavailable || backendErr.Code != "HME_FILTER_UNAVAILABLE" {
+		t.Fatalf("error = %#v, want 503 HME_FILTER_UNAVAILABLE", backendErr)
+	}
 }

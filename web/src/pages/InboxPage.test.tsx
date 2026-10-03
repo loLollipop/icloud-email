@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -94,8 +94,11 @@ describe('InboxPage', () => {
     // 确认 query 参数
     const url = new URL(lastUrl)
     expect(url.searchParams.get('account_id')).toBe('acc_1')
+    expect(url.searchParams.get('scope')).toBe('hme_aliases')
     expect(url.searchParams.get('limit')).toBe('20')
     expect(url.searchParams.get('days')).toBe('7')
+    expect(screen.getByRole('option', { name: '全部 iCloud 隐私别名' })).toBeInTheDocument()
+    expect(screen.getByText(/仅展示当前账号所有 iCloud 隐私别名/)).toBeInTheDocument()
     // 修改 limit/days 再查询
     const user = userEvent.setup()
     await user.selectOptions(screen.getByLabelText(/加载范围/), '100')
@@ -334,6 +337,63 @@ describe('InboxPage', () => {
     expect(inboxRequests).toBe(2)
   })
 
+  it('缓存后台重验失败时清除旧邮件并显示错误', async () => {
+    let failRefresh = false
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => {
+        if (failRefresh) {
+          return HttpResponse.json(
+            { success: false, code: 'HME_FILTER_UNAVAILABLE', message: '隐私别名邮件筛选暂不可用' },
+            { status: 503 },
+          )
+        }
+        return HttpResponse.json({ success: true, data: inboxResult })
+      }),
+    )
+
+    const first = renderPage()
+    await screen.findByText('主题一')
+    first.unmount()
+    failRefresh = true
+
+    renderPage()
+    expect(screen.getByText('主题一')).toBeInTheDocument()
+    expect(await screen.findByText('隐私别名邮件筛选暂不可用')).toBeInTheDocument()
+    expect(screen.queryByText('主题一')).toBeNull()
+  })
+
+  it('缓存重验失败会关闭期间打开的旧详情', async () => {
+    let refreshPending = false
+    let rejectRefresh: (() => void) | undefined
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => {
+        if (!refreshPending) return HttpResponse.json({ success: true, data: inboxResult })
+        return new Promise<Response>((resolve) => {
+          rejectRefresh = () => resolve(HttpResponse.json(
+            { success: false, code: 'HME_FILTER_UNAVAILABLE', message: '隐私别名邮件筛选暂不可用' },
+            { status: 503 },
+          ))
+        })
+      }),
+      http.get('/api/inbox/:id', () => HttpResponse.json({ success: true, data: fullMessage })),
+    )
+
+    const first = renderPage()
+    await screen.findByText('主题一')
+    first.unmount()
+    refreshPending = true
+
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: '主题一' }))
+    expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
+    rejectRefresh?.()
+    expect(await screen.findByText('隐私别名邮件筛选暂不可用')).toBeInTheDocument()
+    expect(screen.queryByRole('article', { name: '邮件阅读区' })).toBeNull()
+    expect(screen.queryByText('主题一')).toBeNull()
+  })
+
   it('后台账号刷新不会覆盖用户刚选择的账号', async () => {
     const secondAccount: AccountSummary = { ...accounts[0], id: 'acc_2', name: '备用号' }
     const accountOptions = [...accounts, secondAccount]
@@ -393,6 +453,47 @@ describe('InboxPage', () => {
     expect(query.get('days')).toBe('30')
     expect(screen.getByLabelText(/加载范围/)).toHaveValue('50')
     expect(screen.getByLabelText(/时间范围/)).toHaveValue('30')
+  })
+
+  it('删除重试始终绑定最初账号和邮件 UID', async () => {
+    const secondAccount: AccountSummary = { ...accounts[0], id: 'acc_2', name: '备用号' }
+    const deleteURLs: string[] = []
+    let releaseFirst: (() => void) | undefined
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: [...accounts, secondAccount] })),
+      http.get('/api/inbox', ({ request }) => {
+        const accountID = new URL(request.url).searchParams.get('account_id') ?? ''
+        return HttpResponse.json({ success: true, data: { ...inboxResult, account_id: accountID } })
+      }),
+      http.get('/api/inbox/:id', () => HttpResponse.json({ success: true, data: fullMessage })),
+      http.delete('/api/inbox/:id', ({ request }) => {
+        deleteURLs.push(request.url)
+        if (deleteURLs.length === 1) {
+          return new Promise<Response>((resolve) => {
+            releaseFirst = () => resolve(HttpResponse.json(
+              { success: false, code: 'UPSTREAM_FAILURE', message: '删除邮件失败' },
+              { status: 502 },
+            ))
+          })
+        }
+        return HttpResponse.json({ success: true, data: { id: '1' } })
+      }),
+    )
+
+    renderPage('/inbox?account_id=acc_1')
+    await userEvent.click(await screen.findByRole('button', { name: '主题一' }))
+    await screen.findByText('Plain detail body')
+    await userEvent.click(screen.getByRole('button', { name: '删除邮件' }))
+    await userEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    fireEvent.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
+    fireEvent.change(screen.getByLabelText(/账号/), { target: { value: 'acc_2' } })
+    releaseFirst?.()
+    await waitFor(() => expect(screen.getByRole('button', { name: '确认删除' })).not.toBeDisabled())
+    await userEvent.click(screen.getByRole('button', { name: '确认删除' }))
+
+    await waitFor(() => expect(deleteURLs).toHaveLength(2))
+    expect(deleteURLs.map((url) => new URL(url).searchParams.get('account_id'))).toEqual(['acc_1', 'acc_1'])
   })
 
   it('账号列表待加载时修改普通筛选仍会初始化默认账号', async () => {
@@ -475,6 +576,9 @@ describe('InboxPage', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '主题一' }))
     expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '← 返回全部邮件' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/别名/)).toBeNull()
+    expect(screen.queryByLabelText('邮件列表')).toBeNull()
     expect(screen.queryByTitle('邮件 HTML 正文')).toBeNull()
   })
 
@@ -528,17 +632,43 @@ describe('InboxPage', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '主题一' }))
     expect(await screen.findByText('读取中…')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
     await user.click(screen.getByRole('button', { name: '主题二' }))
     expect(await screen.findByText('新正文')).toBeInTheDocument()
     releaseFirst?.()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(screen.queryByText('旧正文')).toBeNull()
-
+    await user.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
     await user.click(screen.getByRole('button', { name: '主题一' }))
     await screen.findByText('读取中…')
-    await user.click(screen.getByRole('button', { name: /返回列表/ }))
+    await user.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
     releaseFirst?.()
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(screen.getByText('选择一封邮件查看内容')).toBeInTheDocument()
+    expect(screen.getByLabelText('邮件列表')).toBeInTheDocument()
+    expect(screen.queryByText('旧正文')).toBeNull()
+  })
+
+  it('从详情返回保留搜索和分页状态', async () => {
+    const messages = Array.from({ length: 12 }, (_, index) => ({
+      ...inboxResult.messages[0],
+      id: String(index + 1),
+      subject: `保留状态 ${index + 1}`,
+    }))
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: { ...inboxResult, count: messages.length, messages } })),
+      http.get('/api/inbox/:id', ({ params }) => HttpResponse.json({ success: true, data: { ...fullMessage, id: String(params.id), subject: `保留状态 ${params.id}` } })),
+    )
+    renderPage()
+    const user = userEvent.setup()
+    await screen.findByRole('button', { name: '保留状态 1' })
+    await user.type(screen.getByLabelText('搜索当前已加载邮件'), '保留状态')
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await user.click(screen.getByRole('button', { name: '保留状态 11' }))
+    await screen.findByText('Plain detail body')
+    await user.click(screen.getByRole('button', { name: '← 返回全部邮件' }))
+    expect(screen.getByLabelText('搜索当前已加载邮件')).toHaveValue('保留状态')
+    expect(screen.getByText('第 11-12 项，共 12 项')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保留状态 11' })).toBeInTheDocument()
   })
 })

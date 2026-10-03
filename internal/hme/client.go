@@ -493,7 +493,10 @@ func (c *Client) ListAliases() ([]Alias, error) {
 	if err != nil {
 		return nil, err
 	}
-	aliases := parseAliasList(body)
+	aliases, err := parseAliasList(body)
+	if err != nil {
+		return nil, err
+	}
 	c.log("共 %d 个别名", len(aliases))
 	return aliases, nil
 }
@@ -669,55 +672,90 @@ func (c *Client) Delete(anonymousID string) error {
 
 // ---- 别名列表解析 (对应 ICloudHME._parse_alias_list) ----
 
-// parseAliasList 解析 iCloud 返回的别名列表 JSON。
-// 容错:优先取 result.hmeEmails,找不到则递归查找第一个对象数组。
-func parseAliasList(body string) []Alias {
+// parseAliasList parses the documented /v2/hme/list response. This list is an
+// authorization source for the HME inbox, so an unknown response shape must
+// fail closed instead of being interpreted as an empty list or searched for an
+// unrelated array containing email-looking fields.
+func parseAliasList(body string) ([]Alias, error) {
 	if !gjson.Valid(body) {
-		return []Alias{}
+		return nil, fmt.Errorf("别名列表响应不是有效 JSON")
 	}
 	root := gjson.Parse(body)
+	if !root.IsObject() {
+		return nil, fmt.Errorf("别名列表响应格式异常")
+	}
+
+	success := root.Get("success")
+	if !success.Exists() || (success.Type != gjson.True && success.Type != gjson.False) {
+		return nil, fmt.Errorf("别名列表响应缺少有效的 success 状态")
+	}
+	if !success.Bool() {
+		errMsg := firstNonEmpty(
+			root.Get("error.errorMessage").String(),
+			root.Get("errorMessage").String(),
+			root.Get("reason").String(),
+		)
+		return nil, fmt.Errorf("获取别名列表失败: %s", nonEmpty(errMsg, "unknown"))
+	}
 
 	arr := root.Get("result.hmeEmails")
-	if !arr.IsArray() {
-		arr = findFirstDictArray(root)
-	}
-	if !arr.IsArray() {
-		return []Alias{}
+	if !arr.Exists() || !arr.IsArray() {
+		return nil, fmt.Errorf("别名列表响应缺少 result.hmeEmails 数组")
 	}
 
-	var aliases []Alias
+	aliases := make([]Alias, 0, len(arr.Array()))
+	var parseErr error
 	arr.ForEach(func(_, item gjson.Result) bool {
 		if !item.IsObject() {
+			parseErr = fmt.Errorf("别名列表包含无效条目")
+			return false
+		}
+		state := strings.ToLower(strings.TrimSpace(firstNonEmpty(item.Get("state").String(), item.Get("status").String())))
+		if state == "deleted" {
 			return true
 		}
-		meta := item.Get("metaData")
-		email := strings.TrimSpace(strings.ToLower(firstNonEmpty(
-			item.Get("hme").String(),
-			item.Get("email").String(),
-			item.Get("alias").String(),
-			item.Get("address").String(),
-			meta.Get("hme").String(),
-		)))
+
+		// Apple's HME list names the generated address as "hme". Do not accept
+		// generic email/alias/address fields: unrelated objects must never become
+		// inbox authorization entries.
+		hme := item.Get("hme")
+		if hme.Type != gjson.String {
+			parseErr = fmt.Errorf("别名列表包含缺少有效 hme 的条目")
+			return false
+		}
+		email := strings.TrimSpace(strings.ToLower(hme.String()))
 		if email == "" || !strings.Contains(email, "@") {
-			return true
+			parseErr = fmt.Errorf("别名列表包含缺少有效 hme 的条目")
+			return false
 		}
-		state := strings.ToLower(firstNonEmpty(item.Get("state").String(), item.Get("status").String()))
-		active := state != "inactive" && state != "deleted"
+
+		active := state != "inactive"
 		if item.Get("active").Exists() {
+			if item.Get("active").Type != gjson.True && item.Get("active").Type != gjson.False {
+				parseErr = fmt.Errorf("别名列表包含无效 active 状态")
+				return false
+			}
 			active = item.Get("active").Bool() && active
 		}
 		if item.Get("isActive").Exists() {
+			if item.Get("isActive").Type != gjson.True && item.Get("isActive").Type != gjson.False {
+				parseErr = fmt.Errorf("别名列表包含无效 isActive 状态")
+				return false
+			}
 			active = item.Get("isActive").Bool() && active
 		}
 		aliases = append(aliases, Alias{
 			Email:       email,
 			AnonymousID: firstNonEmpty(item.Get("anonymousId").String(), item.Get("id").String()),
-			Label:       firstNonEmpty(item.Get("label").String(), meta.Get("label").String()),
+			Label:       item.Get("label").String(),
 			Active:      active,
 			CreatedAt:   firstNonEmpty(item.Get("createTimestamp").String(), item.Get("createdAt").String()),
 		})
 		return true
 	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
 
 	// 活跃的排前面,再按邮箱字母序。
 	sort.SliceStable(aliases, func(i, j int) bool {
@@ -726,28 +764,7 @@ func parseAliasList(body string) []Alias {
 		}
 		return aliases[i].Email < aliases[j].Email
 	})
-	return aliases
-}
-
-// findFirstDictArray 递归查找第一个「对象数组」。
-func findFirstDictArray(v gjson.Result) gjson.Result {
-	if v.IsArray() {
-		if len(v.Array()) > 0 && v.Array()[0].IsObject() {
-			return v
-		}
-	}
-	if v.IsObject() {
-		var found gjson.Result
-		v.ForEach(func(_, val gjson.Result) bool {
-			if r := findFirstDictArray(val); r.IsArray() && len(r.Array()) > 0 {
-				found = r
-				return false
-			}
-			return true
-		})
-		return found
-	}
-	return gjson.Result{}
+	return aliases, nil
 }
 
 // ---- 小工具 ----

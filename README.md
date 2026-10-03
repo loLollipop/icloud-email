@@ -9,10 +9,10 @@
 - ✅ **中文管理界面** — 浏览器访问 `http://localhost:8081` 即开即用
 - ✅ **创建 HME 别名** — 自动生成 iCloud 隐藏邮箱地址
 - ✅ **列出所有别名** — 查看账号下的所有 HME 别名
-- ✅ **收取邮件** — 通过 IMAP 或 Web API 读取发到 HME 别名的邮件
-- ✅ **双路径读信** — 邮件读取优先走 IMAP (App Password),无 App Password 时回退 Web API (Cookie)
+- ✅ **收取邮件** — 通过 IMAP 精确读取发到当前账号 HME 别名的邮件
+- ✅ **安全范围** — 列表、详情和删除均校验 HME 收件人，不读取关联邮箱的普通邮件
 - ✅ **多账号管理** — 支持多个 iCloud 账号并行管理
-- ✅ **双认证模式** — Cookie (创建别名 + 读邮件回退) 和 App Password (IMAP 优先)
+- ✅ **双认证模式** — Cookie 用于别名管理，App Password 用于 IMAP 读信
 - ✅ **安全模型** — 单管理员会话、CSRF 校验、登录限流、响应脱敏
 
 ## 快速开始
@@ -173,7 +173,7 @@ GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
 #   account_id - 必填: 账号 ID
 #   alias      - 可选: 只读取发到该别名的邮件
 #   limit      - 可选: 返回邮件数量 (默认 20)
-#   days       - 可选: 查找最近几天的邮件 (默认 7,仅 IMAP 模式)
+#   days       - 可选: 查找最近几天的邮件 (默认 7)
 
 # 响应
 {
@@ -196,9 +196,8 @@ GET /api/inbox?account_id=acc_1&alias=xyz123@icloud.com&limit=20&days=7
   }
 }
 
-# 读取方式 (自动选择):
-#   method: "imap"    — 通过 App Password 认证 (优先)
-#   method: "web_api" — 通过 Cookie 认证,无需 App Password (回退)
+# 读取方式:
+#   method: "imap" — 通过 App Password 认证并按 HME 收件人精确校验
 ```
 
 ### 账号管理接口
@@ -409,13 +408,13 @@ DELETE /api/aliases/:id
 
 ## 认证方式
 
-### 方式一: Cookie 认证 (推荐,功能最完整)
+### 方式一: Cookie 认证 (别名管理)
 
-Cookie 认证可实现所有功能:创建别名、读取邮件、管理别名。
+Cookie 认证用于创建和管理 Hide My Email 别名。为避免关联邮箱中的普通邮件混入，收件箱读取不会回退到 Cookie Web API。
 
 **适用范围:**
 - 创建/停用/激活/删除 HME 别名 ✅
-- 读取邮件 (通过 iCloud Web API,无需 App Password) ✅
+- 读取邮件 ❌（需要配置 IMAP App 专用密码）
 
 **获取 Cookie:**
 
@@ -432,9 +431,9 @@ Cookie 认证可实现所有功能:创建别名、读取邮件、管理别名。
 
 **注意:** 导出的 Cookie 值不要包含多余的引号或转义字符。
 
-### 方式二: App Password 认证 (IMAP,优先读邮件)
+### 方式二: App Password 认证 (IMAP 读取邮件)
 
-App Password 用于 IMAP 读取邮件,是邮件读取的优先路径 (支持服务端按收件人搜索)。
+App Password 用于 IMAP 读取邮件。服务端只按当前账号已验证的 HME 别名收件人集合搜索；无法可靠筛选时会返回明确错误，不会读取未过滤的原始收件箱。
 
 **生成 App Password:**
 
@@ -442,14 +441,15 @@ App Password 用于 IMAP 读取邮件,是邮件读取的优先路径 (支持服�
 2. 进入 "登录和安全" → "App 专用密码"
 3. 生成新密码,用于此工具
 
-### 邮件读取双路径
+### 邮件读取范围
 
-`GET /api/inbox` 自动选择读取方式:
+`GET /api/inbox` 使用 IMAP 精确筛选:
 
-1. **优先: IMAP (App Password)** — 设置了 App Password 时使用,支持服务端按收件人 (`TO`) 搜索
-2. **回退: Web API (Cookie)** — 无 App Password 或 IMAP 失败时,通过 `mccgateway` 端点读取,本地按别名过滤
+1. 不传 `alias` 时，返回当前账号所有仍存在的 HME 别名（包括已停用别名）的邮件并集。
+2. 传入 `alias` 时，该地址必须属于当前账号。
+3. IMAP 不可用或筛选失败时返回 `503 HME_FILTER_UNAVAILABLE`，不会回退 Web API 或原始 INBOX。
 
-响应中包含 `"method": "web_api"` 或 `"method": "imap"` 字段,标识实际使用的读取方式。
+成功响应中的 `method` 为 `"imap"`。
 
 ## 项目架构
 
@@ -472,7 +472,7 @@ icloud-hme/
     │   └── auth.go         # SRP 登录 (账号密码 + 2FA 获取 Cookie)
     ├── mail/
     │   ├── client.go       # IMAP 邮件客户端 (App Password 认证)
-    │   └── web_client.go   # Web 邮件客户端 (Cookie 认证,无需 App Password)
+    │   └── web_client.go   # 保留的 Web 邮件客户端（HME 收件箱不使用此回退）
     ├── server/
     │   ├── server.go       # 路由分组 (认证 + CSRF)
     │   ├── backend.go      # 业务接口与 Manager 适配器
@@ -488,8 +488,8 @@ icloud-hme/
 - **account.Manager**: 管理多个 iCloud 账号,负责配置持久化和客户端创建
 - **hme.Client**: 封装 iCloud HME Web API,支持 Cookie 认证
 - **hme.auth**: SRP 协议登录,支持账号密码 + 可选 2FA
-- **mail.Client**: IMAP 邮件客户端 (App Password,优先读邮件)
-- **mail.WebClient**: 通过 iCloud Web API (mccgateway) 读取邮件,无需 App Password
+- **mail.Client**: IMAP 邮件客户端 (App Password)，按 HME 收件人精确读信
+- **mail.WebClient**: 保留的 iCloud Web 邮件客户端；HME 收件箱不使用该不可靠回退
 - **server.Server**: HTTP API 服务 + 管理界面静态资源
 
 ## 技术栈
@@ -568,14 +568,14 @@ MIT License
 
 ## English
 
-A local management tool for Apple iCloud Hide My Email (HME) aliases, supporting creation, listing, and email reading through reverse-engineered iCloud Web API and IMAP protocol. Ships with a built-in Chinese management UI (React SPA embedded in the single binary).
+A local management tool for Apple iCloud Hide My Email (HME) aliases, using the reverse-engineered iCloud Web API for alias management and IMAP for HME-scoped email reading. Ships with a built-in Chinese management UI (React SPA embedded in the single binary).
 
 ### Features
 
 - Built-in management UI at `http://localhost:8081`
 - Create HME aliases automatically
 - List all aliases for an account
-- Read emails sent to HME aliases via IMAP or Web API
+- Read emails sent to verified HME aliases via IMAP
 - Manage multiple iCloud accounts
 - Dual authentication: Cookie and App Password
 - Security: single-admin session, CSRF checks, login rate limiting, redacted API responses

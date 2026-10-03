@@ -4,6 +4,7 @@ import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias } from '../api/types'
 import {
   invalidateResource,
+  invalidateResourcePrefix,
   loadResource,
   readResource,
   resourceKeys,
@@ -248,6 +249,7 @@ export default function AliasesPage() {
       }
       setConfirm(null)
       invalidateResource(resourceKeys.aliases(accountId))
+      invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
       setAliasesLoading(true)
       setRetryKey((k) => k + 1)
     } catch (err) {
@@ -263,6 +265,7 @@ export default function AliasesPage() {
     setCreateOpen(false)
     showCopyable(email)
     invalidateResource(resourceKeys.aliases(accountId))
+    invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
     setAliasesLoading(true)
     setRetryKey((k) => k + 1)
   }

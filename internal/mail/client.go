@@ -6,6 +6,7 @@ package mail
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"mime"
 	"net"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap"
+	uidplus "github.com/emersion/go-imap-uidplus"
 	"github.com/emersion/go-imap/client"
 	"github.com/emersion/go-message/charset"
 )
@@ -32,6 +34,9 @@ const (
 var (
 	imapConnectTimeout = defaultConnectTimeout
 	imapCommandTimeout = defaultCommandTimeout
+	// ErrMessageOutsideHME deliberately conflates an unknown UID with a message
+	// outside the verified Hide My Email alias set.
+	ErrMessageOutsideHME = errors.New("邮件不存在")
 )
 
 // Message 是一封邮件的摘要信息。
@@ -236,7 +241,7 @@ func (c *Client) ListInbox(limit int, days int) ([]Message, error) {
 		done <- c.cli.Fetch(seqset, items, messages)
 	}()
 
-	var out []Message
+	out := make([]Message, 0, limit)
 	for msg := range messages {
 		m := toMessageWithBody(msg)
 		// toMessageWithBody 统一输出 RFC3339；同时兼容历史或上游返回的 RFC1123 日期。
@@ -283,6 +288,113 @@ func (c *Client) FindByRecipient(recipient string, limit int, days int) ([]Messa
 	return out, err
 }
 
+// FindByRecipients returns the newest messages addressed to any of the exact
+// recipient addresses. An empty recipient set is deliberately safe: it never
+// falls back to reading the unfiltered inbox.
+func (c *Client) FindByRecipients(recipients []string, limit int, days int) ([]Message, error) {
+	recipients = normalizeRecipients(recipients)
+	if len(recipients) == 0 {
+		return []Message{}, nil
+	}
+	if c.cli == nil {
+		return nil, fmt.Errorf("未连接")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if _, err := c.cli.Select("INBOX", true); err != nil {
+		return nil, err
+	}
+
+	criteria := recipientSearchCriteria(recipients, days, time.Now())
+	uids, err := c.cli.UidSearch(criteria)
+	if err == nil {
+		recipientSet := make(map[string]struct{}, len(recipients))
+		for _, recipient := range recipients {
+			recipientSet[recipient] = struct{}{}
+		}
+		return c.fetchMatchingUIDs(normalizeUIDs(uids, 0), recipientSet, limit)
+	}
+
+	// Do not return a partial local scan as a successful HME inbox. Callers
+	// must see that complete server-side filtering was unavailable.
+	return nil, err
+}
+
+func normalizeRecipients(recipients []string) []string {
+	seen := make(map[string]struct{}, len(recipients))
+	out := make([]string, 0, len(recipients))
+	for _, recipient := range recipients {
+		recipient = strings.ToLower(strings.TrimSpace(recipient))
+		if recipient == "" {
+			continue
+		}
+		if _, exists := seen[recipient]; exists {
+			continue
+		}
+		seen[recipient] = struct{}{}
+		out = append(out, recipient)
+	}
+	return out
+}
+
+func recipientSearchCriteria(recipients []string, days int, now time.Time) *imap.SearchCriteria {
+	var build func(int, int) *imap.SearchCriteria
+	build = func(start, end int) *imap.SearchCriteria {
+		if end-start == 1 {
+			criteria := imap.NewSearchCriteria()
+			criteria.Header.Add("To", recipients[start])
+			return criteria
+		}
+		middle := start + (end-start)/2
+		criteria := imap.NewSearchCriteria()
+		criteria.Or = append(criteria.Or, [2]*imap.SearchCriteria{build(start, middle), build(middle, end)})
+		return criteria
+	}
+	criteria := build(0, len(recipients))
+	if days > 0 {
+		criteria.Since = now.AddDate(0, 0, -days)
+	}
+	return criteria
+}
+
+func normalizeUIDs(uids []uint32, limit int) []uint32 {
+	seen := make(map[uint32]struct{}, len(uids))
+	unique := make([]uint32, 0, len(uids))
+	for _, uid := range uids {
+		if uid == 0 {
+			continue
+		}
+		if _, exists := seen[uid]; exists {
+			continue
+		}
+		seen[uid] = struct{}{}
+		unique = append(unique, uid)
+	}
+	sort.Slice(unique, func(i, j int) bool { return unique[i] < unique[j] })
+	return newestUIDs(unique, limit)
+}
+
+func envelopeMatchesRecipients(envelope *imap.Envelope, recipients map[string]struct{}) bool {
+	if envelope == nil {
+		return false
+	}
+	for _, address := range envelope.To {
+		if address == nil {
+			continue
+		}
+		// The mailbox name comes from the parsed IMAP ENVELOPE and may legally
+		// contain leading or trailing whitespace when it was a quoted local-part.
+		// Trimming here would turn e.g. " alias"@icloud.com into the distinct
+		// configured alias alias@icloud.com and cross the HME authorization scope.
+		normalized := strings.ToLower(address.Address())
+		if _, ok := recipients[normalized]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // ForEachByRecipient 按新→旧遍历发给 recipient 的最近 limit 封邮件。
 // onMsg 返回 false 时立即停止(用于 OTP 命中即返回)。
 func (c *Client) ForEachByRecipient(recipient string, limit int, days int, onMsg func(Message) bool) error {
@@ -323,7 +435,8 @@ func (c *Client) ForEachByRecipient(recipient string, limit int, days int, onMsg
 	}
 
 	// 2) fallback: 只扫最近 N 封信封, 命中 To 再拉 body
-	return c.forEachRecentMatching(recipient, limit, days, onMsg)
+	recipientSet := map[string]struct{}{strings.ToLower(strings.TrimSpace(recipient)): {}}
+	return c.forEachRecentMatchingSet(recipientSet, limit, days, onMsg)
 }
 
 // newestUIDs 保留 UID 列表中最新的 limit 个(假定 UID 升序)。
@@ -336,6 +449,10 @@ func newestUIDs(uids []uint32, limit int) []uint32 {
 
 // forEachRecentMatching 拉取收件箱最近 scan 封(仅 envelope), 本地按 To 过滤后再取 body。
 func (c *Client) forEachRecentMatching(recipient string, limit int, days int, onMsg func(Message) bool) error {
+	return c.forEachRecentMatchingSet(map[string]struct{}{strings.ToLower(strings.TrimSpace(recipient)): {}}, limit, days, onMsg)
+}
+
+func (c *Client) forEachRecentMatchingSet(recipients map[string]struct{}, limit int, days int, onMsg func(Message) bool) error {
 	mbox, err := c.cli.Select("INBOX", true)
 	if err != nil {
 		return err
@@ -373,7 +490,6 @@ func (c *Client) forEachRecentMatching(recipient string, limit int, days int, on
 		to   string
 	}
 	var cands []cand
-	recipient = strings.ToLower(recipient)
 	for msg := range messages {
 		if msg == nil || msg.Envelope == nil {
 			continue
@@ -386,7 +502,7 @@ func (c *Client) forEachRecentMatching(recipient string, limit int, days int, on
 			}
 			to = strings.Join(parts, ", ")
 		}
-		if !strings.Contains(strings.ToLower(to), recipient) {
+		if !envelopeMatchesRecipients(msg.Envelope, recipients) {
 			continue
 		}
 		if days > 0 && !msg.Envelope.Date.IsZero() {
@@ -426,6 +542,14 @@ func (c *Client) forEachRecentMatching(recipient string, limit int, days int, on
 
 // fetchOneUID 拉取单封邮件(含 body preview), 使用 BODY.PEEK 不标已读。
 func (c *Client) fetchOneUID(uid uint32) (Message, error) {
+	msg, err := c.fetchOneUIDRaw(uid)
+	if err != nil {
+		return Message{}, err
+	}
+	return toMessageWithBody(msg), nil
+}
+
+func (c *Client) fetchOneUIDRaw(uid uint32) (*imap.Message, error) {
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)
 	section := &imap.BodySectionName{Peek: true}
@@ -437,9 +561,9 @@ func (c *Client) fetchOneUID(uid uint32) (Message, error) {
 	}()
 	msg, err := drainUIDFetch(uid, messages, done, hasEnvelopeAndBody)
 	if err != nil {
-		return Message{}, err
+		return nil, err
 	}
-	return toMessageWithBody(msg), nil
+	return msg, nil
 }
 
 func (c *Client) fetchByUIDs(uids []uint32, limit int) ([]Message, error) {
@@ -459,8 +583,36 @@ func (c *Client) fetchByUIDs(uids []uint32, limit int) ([]Message, error) {
 	return out, nil
 }
 
+// fetchMatchingUIDs rechecks IMAP SEARCH candidates against the parsed
+// envelope. HEADER searches are substring-based on some servers, so the
+// search result alone is not a safe HME scope boundary.
+func (c *Client) fetchMatchingUIDs(uids []uint32, recipients map[string]struct{}, limit int) ([]Message, error) {
+	if len(uids) == 0 || len(recipients) == 0 {
+		return []Message{}, nil
+	}
+	out := make([]Message, 0, min(limit, len(uids)))
+	for i := len(uids) - 1; i >= 0; i-- {
+		raw, err := c.fetchOneUIDRaw(uids[i])
+		if err != nil {
+			return out, err
+		}
+		if !envelopeMatchesRecipients(raw.Envelope, recipients) {
+			continue
+		}
+		out = append(out, toMessageWithBody(raw))
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 // GetFull 获取单封邮件的完整内容(含正文)。
 func (c *Client) GetFull(uid uint32) (*FullMessage, error) {
+	return c.getFull(uid, nil)
+}
+
+func (c *Client) getFull(uid uint32, recipients map[string]struct{}) (*FullMessage, error) {
 	if c.cli == nil {
 		return nil, fmt.Errorf("未连接")
 	}
@@ -481,6 +633,9 @@ func (c *Client) GetFull(uid uint32) (*FullMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	if recipients != nil && !envelopeMatchesRecipients(msg.Envelope, recipients) {
+		return nil, ErrMessageOutsideHME
+	}
 
 	r := msg.GetBody(&imap.BodySectionName{})
 	if r == nil {
@@ -498,6 +653,19 @@ func (c *Client) GetFull(uid uint32) (*FullMessage, error) {
 		ContentType:   parsed.contentType,
 	}
 	return full, nil
+}
+
+// GetFullForRecipients returns a full message only when its parsed envelope is
+// addressed to one of the verified HME aliases.
+func (c *Client) GetFullForRecipients(uid uint32, recipients []string) (*FullMessage, error) {
+	set := make(map[string]struct{})
+	for _, recipient := range normalizeRecipients(recipients) {
+		set[recipient] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil, ErrMessageOutsideHME
+	}
+	return c.getFull(uid, set)
 }
 
 // drainUIDFetch consumes the whole message stream before waiting for UidFetch's
@@ -532,15 +700,19 @@ func drainUIDFetch(
 	}
 	if selected == nil {
 		if matchedUID {
-			return nil, fmt.Errorf("邮件内容不完整 (uid=%d)", uid)
+			return nil, fmt.Errorf("%w: 邮件内容不完整 (uid=%d)", ErrMessageOutsideHME, uid)
 		}
-		return nil, fmt.Errorf("邮件不存在 (uid=%d)", uid)
+		return nil, fmt.Errorf("%w (uid=%d)", ErrMessageOutsideHME, uid)
 	}
 	return selected, nil
 }
 
 func hasEnvelopeAndBody(msg *imap.Message) bool {
 	return msg.Envelope != nil && msg.GetBody(&imap.BodySectionName{}) != nil
+}
+
+func hasEnvelope(msg *imap.Message) bool {
+	return msg.Envelope != nil
 }
 
 // Delete 删除收件箱中指定 UID 的邮件。
@@ -554,14 +726,62 @@ func (c *Client) Delete(uid uint32) error {
 	if _, err := c.cli.Select("INBOX", false); err != nil {
 		return err
 	}
+	return c.deleteSelectedUID(uid)
+}
+
+// DeleteForRecipients verifies the target envelope and deletes it without
+// reselecting the mailbox, keeping validation and mutation in one IMAP session.
+func (c *Client) DeleteForRecipients(uid uint32, recipients []string) error {
+	if uid == 0 {
+		return ErrMessageOutsideHME
+	}
+	set := make(map[string]struct{})
+	for _, recipient := range normalizeRecipients(recipients) {
+		set[recipient] = struct{}{}
+	}
+	if len(set) == 0 {
+		return ErrMessageOutsideHME
+	}
+	if c.cli == nil {
+		return fmt.Errorf("未连接")
+	}
+	if _, err := c.cli.Select("INBOX", false); err != nil {
+		return err
+	}
 
 	seqset := new(imap.SeqSet)
 	seqset.AddNum(uid)
+	messages := make(chan *imap.Message, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.cli.UidFetch(seqset, []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope}, messages)
+	}()
+	msg, err := drainUIDFetch(uid, messages, done, hasEnvelope)
+	if err != nil {
+		return err
+	}
+	if !envelopeMatchesRecipients(msg.Envelope, set) {
+		return ErrMessageOutsideHME
+	}
+	return c.deleteSelectedUID(uid)
+}
+
+func (c *Client) deleteSelectedUID(uid uint32) error {
+	seqset := new(imap.SeqSet)
+	seqset.AddNum(uid)
+	uidPlusClient := uidplus.NewClient(c.cli)
+	supported, err := uidPlusClient.SupportUidPlus()
+	if err != nil {
+		return err
+	}
+	if !supported {
+		return fmt.Errorf("邮件服务器不支持安全删除 (UIDPLUS)")
+	}
 	item := imap.FormatFlagsOp(imap.AddFlags, true)
 	if err := c.cli.UidStore(seqset, item, []interface{}{imap.DeletedFlag}, nil); err != nil {
 		return err
 	}
-	return c.cli.Expunge(nil)
+	return uidPlusClient.UidExpunge(seqset, nil)
 }
 
 // ---- 解析工具 ----
