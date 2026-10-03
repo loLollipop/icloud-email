@@ -1,5 +1,5 @@
 import { http, HttpResponse } from 'msw'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -8,6 +8,7 @@ import { server } from '../test/server'
 import { setCSRFToken } from '../api/client'
 import { ToastProvider } from '../components/ToastProvider'
 import type { AccountSummary } from '../api/types'
+import { loadResource, readResource, resourceKeys } from '../api/resourceCache'
 
 const accounts: AccountSummary[] = [
   {
@@ -189,6 +190,35 @@ describe('AccountsPage', () => {
     expect((screen.getByLabelText('Cookie') as HTMLTextAreaElement).value).toBe('')
   })
 
+  it('Cookie 更新失败也只清理当前账号的身份缓存', async () => {
+    const targetInboxKey = resourceKeys.inbox('account_id=acc_active&limit=20&days=7')
+    const otherInboxKey = resourceKeys.inbox('account_id=acc_other&limit=20&days=7')
+    await loadResource(resourceKeys.aliases('acc_active'), 60_000, async () => ['target-alias'])
+    await loadResource(targetInboxKey, 60_000, async () => ({ target: true }))
+    await loadResource(resourceKeys.aliases('acc_other'), 60_000, async () => ['other-alias'])
+    await loadResource(otherInboxKey, 60_000, async () => ({ other: true }))
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.put('/api/accounts/:id/cookies', () => HttpResponse.json(
+        { success: false, code: 'UPSTREAM_FAILURE', message: 'Cookie 校验失败' },
+        { status: 502 },
+      )),
+    )
+
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
+    await user.type(screen.getByLabelText('Cookie'), 'session=new')
+    await user.click(screen.getByRole('button', { name: /保存/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Cookie 校验失败')
+
+    expect(readResource(resourceKeys.aliases('acc_active'))).toBeUndefined()
+    expect(readResource(targetInboxKey)).toBeUndefined()
+    expect(readResource(resourceKeys.aliases('acc_other'))?.data).toEqual(['other-alias'])
+    expect(readResource(otherInboxKey)?.data).toEqual({ other: true })
+  })
+
   it('iCloud 登录收到 OTP_REQUIRED 后只显示 OTP 输入并可重试', async () => {
     let calls = 0
     server.use(
@@ -287,5 +317,49 @@ describe('AccountsPage', () => {
     // 取消不发请求
     await user.click(screen.getByRole('button', { name: /取消/ }))
     expect(deleted).toBe(false)
+  })
+
+  it('删除后的新列表不会被较晚返回的初始请求覆盖', async () => {
+    const oldResponse = [{ ...accounts[0], name: '旧响应账号' }]
+    const newResponse = [{ ...accounts[1], name: '新响应账号' }]
+    await loadResource(resourceKeys.accounts, 0, async () => accounts)
+
+    let getCalls = 0
+    let resolveOld!: (value: AccountSummary[]) => void
+    let resolveNew!: (value: AccountSummary[]) => void
+    const oldList = new Promise<AccountSummary[]>((resolve) => { resolveOld = resolve })
+    const newList = new Promise<AccountSummary[]>((resolve) => { resolveNew = resolve })
+    server.use(
+      http.get('/api/accounts', async () => {
+        getCalls++
+        const data = await (getCalls === 1 ? oldList : newList)
+        return HttpResponse.json({ success: true, data })
+      }),
+      http.delete('/api/accounts/:id', () => (
+        HttpResponse.json({ success: true, data: { id: 'acc_active' } })
+      )),
+    )
+
+    renderPage()
+    await waitFor(() => expect(getCalls).toBe(1))
+    const user = userEvent.setup()
+    await user.click(screen.getAllByRole('button', { name: /删除/ })[0])
+    await user.type(screen.getByLabelText(/输入账号名称/), '活跃号')
+    await user.click(screen.getByRole('button', { name: /确认删除/ }))
+    await waitFor(() => expect(getCalls).toBe(2))
+
+    await act(async () => {
+      resolveNew(newResponse)
+    })
+    expect(await screen.findByText('新响应账号')).toBeInTheDocument()
+
+    await act(async () => {
+      resolveOld(oldResponse)
+      await oldList
+    })
+    await waitFor(() => {
+      expect(screen.getByText('新响应账号')).toBeInTheDocument()
+      expect(screen.queryByText('旧响应账号')).not.toBeInTheDocument()
+    })
   })
 })

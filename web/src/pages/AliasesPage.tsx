@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias } from '../api/types'
+import {
+  invalidateResource,
+  loadResource,
+  readResource,
+  resourceKeys,
+  resourceTTLs,
+} from '../api/resourceCache'
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -58,11 +65,20 @@ function dateTimestamp(raw?: string): number | null {
 }
 
 export default function AliasesPage() {
-  const [accounts, setAccounts] = useState<AccountSummary[]>([])
-  const [accountId, setAccountId] = useState('')
-  const [aliases, setAliases] = useState<Alias[]>([])
-  const [accountsLoading, setAccountsLoading] = useState(true)
-  const [aliasesLoading, setAliasesLoading] = useState(true)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const accountSelectionChangedRef = useRef(false)
+  const accountsCached = readResource<AccountSummary[]>(resourceKeys.accounts)
+  const initialAccountID = accountsCached?.data.find((account) => account.id === searchParams.get('account_id'))?.id
+    ?? accountsCached?.data[0]?.id
+    ?? ''
+  const initialAliases = initialAccountID
+    ? readResource<{ aliases: Alias[] }>(resourceKeys.aliases(initialAccountID))
+    : undefined
+  const [accounts, setAccounts] = useState<AccountSummary[]>(accountsCached?.data ?? [])
+  const [accountId, setAccountId] = useState(initialAccountID)
+  const [aliases, setAliases] = useState<Alias[]>(initialAliases?.data.aliases ?? [])
+  const [accountsLoading, setAccountsLoading] = useState(!accountsCached)
+  const [aliasesLoading, setAliasesLoading] = useState(initialAccountID !== '' && !initialAliases)
   const [error, setError] = useState('')
   const [retryKey, setRetryKey] = useState(0)
   const [search, setSearch] = useState('')
@@ -76,16 +92,16 @@ export default function AliasesPage() {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
 
-  const [searchParams, setSearchParams] = useSearchParams()
   const { show, showCopyable } = useToast()
 
   // 加载账号列表
   useEffect(() => {
     let cancelled = false
-    request<AccountSummary[]>('/api/accounts')
+    loadResource(resourceKeys.accounts, resourceTTLs.accounts, () => request<AccountSummary[]>('/api/accounts'))
       .then((data) => {
         if (cancelled) return
         setAccounts(data)
+        if (accountSelectionChangedRef.current) return
         const queryId = searchParams.get('account_id')
         const valid = data.find((a) => a.id === queryId)
         const target = valid ? valid.id : data[0]?.id ?? ''
@@ -96,7 +112,9 @@ export default function AliasesPage() {
       })
       .catch((err) => {
         if (cancelled) return
-        setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        if (!accountsCached) {
+          setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        }
       })
       .finally(() => {
         if (!cancelled) setAccountsLoading(false)
@@ -110,9 +128,25 @@ export default function AliasesPage() {
   // 加载别名列表
   useEffect(() => {
     if (!accountId) return
+    const key = resourceKeys.aliases(accountId)
+    const cached = readResource<{ account_id: string; count: number; aliases: Alias[] }>(key)
+    // Hydrate synchronously from the external cache so navigation never flashes a skeleton.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (cached) {
+      setAliases(cached.data.aliases ?? [])
+      setAliasesLoading(false)
+    } else {
+      setAliases([])
+      setAliasesLoading(true)
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
     let cancelled = false
-    request<{ account_id: string; count: number; aliases: Alias[] }>(
-      `/api/aliases?account_id=${encodeURIComponent(accountId)}`,
+    loadResource(
+      key,
+      resourceTTLs.aliases,
+      () => request<{ account_id: string; count: number; aliases: Alias[] }>(
+        `/api/aliases?account_id=${encodeURIComponent(accountId)}`,
+      ),
     )
       .then((data) => {
         if (cancelled) return
@@ -121,7 +155,9 @@ export default function AliasesPage() {
       })
       .catch((err) => {
         if (cancelled) return
-        setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        if (!cached) {
+          setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        }
       })
       .finally(() => {
         if (!cancelled) setAliasesLoading(false)
@@ -159,6 +195,7 @@ export default function AliasesPage() {
   }, [aliases, search, filter, sortDirection])
 
   function handleRetry() {
+    if (accountId) invalidateResource(resourceKeys.aliases(accountId))
     setAliasesLoading(true)
     setRetryKey((k) => k + 1)
   }
@@ -194,6 +231,7 @@ export default function AliasesPage() {
         show(type === 'deactivate' ? '别名已停用' : '别名已激活')
       }
       setConfirm(null)
+      invalidateResource(resourceKeys.aliases(accountId))
       setAliasesLoading(true)
       setRetryKey((k) => k + 1)
     } catch (err) {
@@ -208,6 +246,7 @@ export default function AliasesPage() {
   function handleCreated(email: string) {
     setCreateOpen(false)
     showCopyable(email)
+    invalidateResource(resourceKeys.aliases(accountId))
     setAliasesLoading(true)
     setRetryKey((k) => k + 1)
   }
@@ -241,8 +280,10 @@ export default function AliasesPage() {
             id="alias-account"
             value={accountId}
             onChange={(e) => {
-              setAliases([])
-              setAliasesLoading(true)
+              accountSelectionChangedRef.current = true
+              const cached = readResource<{ aliases: Alias[] }>(resourceKeys.aliases(e.target.value))
+              setAliases(cached?.data.aliases ?? [])
+              setAliasesLoading(!cached)
               setError('')
               setAccountId(e.target.value)
               setSearchParams({ account_id: e.target.value }, { replace: true })

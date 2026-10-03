@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Dialog from './Dialog'
 import { request, ApiError } from '../api/client'
+import { invalidateResource, invalidateResourcePrefix, resourceKeys } from '../api/resourceCache'
 
 interface ICloudLoginDialogProps {
   accountId: string
@@ -26,6 +27,8 @@ export default function ICloudLoginDialog({
     if (submitting) return
     setSubmitting(true)
     setError('')
+    invalidateResource(resourceKeys.aliases(accountId))
+    invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
     try {
       await request(`/api/accounts/${accountId}/login`, {
         method: 'POST',

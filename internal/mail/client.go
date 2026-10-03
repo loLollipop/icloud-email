@@ -5,10 +5,14 @@
 package mail
 
 import (
+	"crypto/tls"
 	"fmt"
 	"mime"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap"
@@ -17,8 +21,17 @@ import (
 )
 
 const (
-	IMAPServer = "imap.mail.me.com"
-	IMAPPort   = 993
+	IMAPServer            = "imap.mail.me.com"
+	IMAPPort              = 993
+	defaultConnectTimeout = 10 * time.Second
+	defaultCommandTimeout = 30 * time.Second
+)
+
+// Variables keep timeout regression tests fast while production uses the
+// explicit defaults above. Tests in this package must restore them after use.
+var (
+	imapConnectTimeout = defaultConnectTimeout
+	imapCommandTimeout = defaultCommandTimeout
 )
 
 // Message 是一封邮件的摘要信息。
@@ -42,11 +55,39 @@ type FullMessage struct {
 
 // Client 是 iCloud 邮件 IMAP 客户端。
 type Client struct {
-	username string
-	password string
-	server   string
-	port     int
-	cli      *client.Client
+	username  string
+	password  string
+	server    string
+	port      int
+	tlsConfig *tls.Config
+	cli       *client.Client
+}
+
+// bootstrapDeadlineConn keeps the absolute connection deadline in force while
+// go-imap reads the greeting and, when necessary, issues its initial CAPABILITY
+// command. client.New has no timeout parameter and clears an existing deadline
+// before that command because Client.Timeout is still zero.
+type bootstrapDeadlineConn struct {
+	net.Conn
+
+	mu     sync.Mutex
+	active bool
+}
+
+func (c *bootstrapDeadlineConn) SetDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active && deadline.IsZero() {
+		return nil
+	}
+	return c.Conn.SetDeadline(deadline)
+}
+
+func (c *bootstrapDeadlineConn) finish() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.active = false
+	return c.Conn.SetDeadline(time.Time{})
 }
 
 // NewClient 创建 IMAP 客户端。需在调用其它方法前先 Connect。
@@ -67,13 +108,47 @@ func (c *Client) Connect() error {
 		}
 		c.forceClose()
 	}
-	addr := fmt.Sprintf("%s:%d", c.server, c.port)
-	cli, err := client.DialTLS(addr, nil)
+	addr := net.JoinHostPort(c.server, strconv.Itoa(c.port))
+	connectDeadline := time.Time{}
+	if imapConnectTimeout > 0 {
+		connectDeadline = time.Now().Add(imapConnectTimeout)
+	}
+	dialer := &net.Dialer{Timeout: imapConnectTimeout}
+	rawConn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("IMAP 连接失败: %w", err)
 	}
+
+	tlsConfig := c.tlsConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	if tlsConfig.ServerName == "" {
+		tlsConfig.ServerName = c.server
+	}
+	tlsConn := tls.Client(rawConn, tlsConfig)
+	bootstrapConn := &bootstrapDeadlineConn{Conn: tlsConn, active: !connectDeadline.IsZero()}
+	if !connectDeadline.IsZero() {
+		if err := bootstrapConn.SetDeadline(connectDeadline); err != nil {
+			_ = rawConn.Close()
+			return fmt.Errorf("IMAP 连接失败: %w", err)
+		}
+	}
+
+	cli, err := client.New(bootstrapConn)
+	if err != nil {
+		_ = bootstrapConn.Close()
+		return fmt.Errorf("IMAP 连接失败: %w", err)
+	}
+	if err := bootstrapConn.finish(); err != nil {
+		_ = cli.Terminate()
+		return fmt.Errorf("IMAP 连接失败: %w", err)
+	}
+	cli.Timeout = imapCommandTimeout
 	if err := cli.Login(c.username, c.password); err != nil {
-		_ = cli.Logout()
+		_ = cli.Terminate()
 		return fmt.Errorf("IMAP 登录失败 — 请检查邮箱账号、授权码和服务器地址: %w", err)
 	}
 	c.cli = cli
@@ -345,12 +420,9 @@ func (c *Client) fetchOneUID(uid uint32) (Message, error) {
 	go func() {
 		done <- c.cli.UidFetch(seqset, items, messages)
 	}()
-	msg := <-messages
-	if err := <-done; err != nil {
+	msg, err := drainUIDFetch(uid, messages, done, hasEnvelopeAndBody)
+	if err != nil {
 		return Message{}, err
-	}
-	if msg == nil {
-		return Message{}, fmt.Errorf("邮件不存在 (uid=%d)", uid)
 	}
 	return toMessageWithBody(msg), nil
 }
@@ -390,13 +462,9 @@ func (c *Client) GetFull(uid uint32) (*FullMessage, error) {
 	go func() {
 		done <- c.cli.UidFetch(seqset, items, messages)
 	}()
-
-	msg := <-messages
-	if err := <-done; err != nil {
+	msg, err := drainUIDFetch(uid, messages, done, hasEnvelopeAndBody)
+	if err != nil {
 		return nil, err
-	}
-	if msg == nil {
-		return nil, fmt.Errorf("邮件不存在 (uid=%d)", uid)
 	}
 
 	r := msg.GetBody(&imap.BodySectionName{})
@@ -415,6 +483,49 @@ func (c *Client) GetFull(uid uint32) (*FullMessage, error) {
 		ContentType:   parsed.contentType,
 	}
 	return full, nil
+}
+
+// drainUIDFetch consumes the whole message stream before waiting for UidFetch's
+// result. The go-imap response handler sends synchronously to this channel, so
+// reading only one response can deadlock it if a server emits duplicate FETCH
+// responses before the tagged completion. Keep the first usable response for
+// the requested UID and discard the rest without allowing a later duplicate to
+// overwrite it.
+func drainUIDFetch(
+	uid uint32,
+	messages <-chan *imap.Message,
+	done <-chan error,
+	usable func(*imap.Message) bool,
+) (*imap.Message, error) {
+	var selected *imap.Message
+	matchedUID := false
+	for msg := range messages {
+		if msg == nil || msg.Uid != uid {
+			continue
+		}
+		matchedUID = true
+		if selected != nil {
+			continue
+		}
+		if usable != nil && !usable(msg) {
+			continue
+		}
+		selected = msg
+	}
+	if err := <-done; err != nil {
+		return nil, err
+	}
+	if selected == nil {
+		if matchedUID {
+			return nil, fmt.Errorf("邮件内容不完整 (uid=%d)", uid)
+		}
+		return nil, fmt.Errorf("邮件不存在 (uid=%d)", uid)
+	}
+	return selected, nil
+}
+
+func hasEnvelopeAndBody(msg *imap.Message) bool {
+	return msg.Envelope != nil && msg.GetBody(&imap.BodySectionName{}) != nil
 }
 
 // Delete 删除收件箱中指定 UID 的邮件。

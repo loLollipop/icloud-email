@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary } from '../api/types'
+import {
+  invalidateResource,
+  invalidateResourcePrefix,
+  loadResource,
+  readResource,
+  resourceKeys,
+  resourceTTLs,
+} from '../api/resourceCache'
 import AsyncState from '../components/AsyncState'
 import AccountFormDialog from '../components/AccountFormDialog'
 import CookieDialog from '../components/CookieDialog'
@@ -53,10 +61,12 @@ function credText(acc: AccountSummary): string {
 }
 
 export default function AccountsPage() {
-  const [accounts, setAccounts] = useState<AccountSummary[]>([])
-  const [loading, setLoading] = useState(true)
+  const accountsCached = readResource<AccountSummary[]>(resourceKeys.accounts)
+  const [accounts, setAccounts] = useState<AccountSummary[]>(accountsCached?.data ?? [])
+  const [loading, setLoading] = useState(!accountsCached)
   const [error, setError] = useState('')
   const [retryKey, setRetryKey] = useState(0)
+  const requestGeneration = useRef(0)
 
   // dialog 状态
   const [formOpen, setFormOpen] = useState(false)
@@ -72,32 +82,41 @@ export default function AccountsPage() {
   const { show } = useToast()
 
   const load = useCallback(async () => {
+    const generation = ++requestGeneration.current
     setLoading(true)
+    invalidateResource(resourceKeys.accounts)
     try {
-      const data = await request<AccountSummary[]>('/api/accounts')
+      const data = await loadResource(
+        resourceKeys.accounts,
+        resourceTTLs.accounts,
+        () => request<AccountSummary[]>('/api/accounts'),
+      )
+      if (requestGeneration.current !== generation) return
       setAccounts(data)
       setError('')
     } catch (err) {
+      if (requestGeneration.current !== generation) return
       setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
     } finally {
-      setLoading(false)
+      if (requestGeneration.current === generation) setLoading(false)
     }
   }, [])
 
   useEffect(() => {
     let cancelled = false
-    request<AccountSummary[]>('/api/accounts')
+    const generation = ++requestGeneration.current
+    loadResource(resourceKeys.accounts, resourceTTLs.accounts, () => request<AccountSummary[]>('/api/accounts'))
       .then((data) => {
-        if (cancelled) return
+        if (cancelled || requestGeneration.current !== generation) return
         setAccounts(data)
         setError('')
       })
       .catch((err) => {
-        if (cancelled) return
+        if (cancelled || requestGeneration.current !== generation) return
         setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled && requestGeneration.current === generation) setLoading(false)
       })
     return () => {
       cancelled = true
@@ -105,8 +124,15 @@ export default function AccountsPage() {
   }, [retryKey])
 
   function handleRetry() {
+    requestGeneration.current++
     setLoading(true)
+    invalidateResource(resourceKeys.accounts)
     setRetryKey((k) => k + 1)
+  }
+
+  function invalidateAccountResources(accountID: string) {
+    invalidateResource(resourceKeys.aliases(accountID))
+    invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountID))
   }
 
   async function handleDelete() {
@@ -114,6 +140,7 @@ export default function AccountsPage() {
     setDeleting(true)
     try {
       await request(`/api/accounts/${deleteFor.id}`, { method: 'DELETE' })
+      invalidateAccountResources(deleteFor.id)
       setDeleteFor(null)
       show('账号已删除')
       void load()
@@ -224,6 +251,7 @@ export default function AccountsPage() {
         open={formOpen}
         onClose={() => setFormOpen(false)}
         onSaved={() => {
+          if (editing) invalidateAccountResources(editing.id)
           setFormOpen(false)
           show('账号已保存')
           void load()
@@ -236,6 +264,7 @@ export default function AccountsPage() {
           open
           onClose={() => setCookieFor(null)}
           onSaved={() => {
+            invalidateAccountResources(cookieFor.id)
             show('Cookie 已更新')
             void load()
           }}
@@ -247,6 +276,7 @@ export default function AccountsPage() {
           open
           onClose={() => setLoginFor(null)}
           onSaved={() => {
+            invalidateAccountResources(loginFor.id)
             show('登录成功')
             void load()
           }}
@@ -258,6 +288,7 @@ export default function AccountsPage() {
           open
           onClose={() => setAppPwdFor(null)}
           onSaved={() => {
+            invalidateAccountResources(appPwdFor.id)
             show('App 专用密码已设置')
             void load()
           }}
@@ -269,6 +300,7 @@ export default function AccountsPage() {
           open
           onClose={() => setProxyFor(null)}
           onSaved={() => {
+            invalidateAccountResources(proxyFor.id)
             show('代理已更新')
             void load()
           }}
@@ -280,7 +312,12 @@ export default function AccountsPage() {
           current={mailboxFor.mailbox}
           open
           onClose={() => setMailboxFor(null)}
-          onSaved={() => { setMailboxFor(null); show('收件邮箱已接入'); void load() }}
+          onSaved={() => {
+            invalidateAccountResources(mailboxFor.id)
+            setMailboxFor(null)
+            show('收件邮箱已接入')
+            void load()
+          }}
         />
       )}
       {deleteFor && (

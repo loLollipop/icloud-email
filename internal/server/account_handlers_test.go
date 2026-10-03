@@ -250,4 +250,21 @@ func TestAccountDeleteNotFound(t *testing.T) {
 	}
 }
 
+func TestAccountDeletePersistenceFailure(t *testing.T) {
+	f := &fakeBackend{removedErr: &BackendError{
+		Status: http.StatusInternalServerError, Code: "PERSISTENCE_ERROR", Message: "账号删除保存失败",
+	}}
+	_, ts := newTestServer(f)
+	defer ts.Close()
+
+	sess, csrf := login(t, ts, "admin-pass-2026-strong")
+	req := authedReq(t, ts, http.MethodDelete, "/api/accounts/acc_1", "")
+	req.AddCookie(&http.Cookie{Name: "hme_session", Value: sess})
+	req.Header.Set("X-CSRF-Token", csrf)
+	status, body, _ := do(t, req)
+	if status != http.StatusInternalServerError || !strings.Contains(body, `"code":"PERSISTENCE_ERROR"`) {
+		t.Fatalf("DELETE persistence failure status=%d body=%s", status, body)
+	}
+}
+
 var _ = io.Discard

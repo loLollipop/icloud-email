@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { request, registerUnauthorizedHandler, setCSRFToken } from '../api/client'
 import type { LoginResult } from '../api/types'
+import { clearResourceCache } from '../api/resourceCache'
 
 type AuthStatus = 'checking' | 'anonymous' | 'authenticated'
 
@@ -42,11 +43,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })
       .then((data) => {
         if (cancelled) return
+        clearResourceCache()
         setCSRFToken(data.csrf_token)
         setStatus('authenticated')
       })
       .catch(() => {
         if (cancelled) return
+        clearResourceCache()
         setStatus('anonymous')
       })
     return () => {
@@ -61,11 +64,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 无论请求结果如何都清空本地状态
     }
     setCSRFToken(null)
+    clearResourceCache()
     setStatus('anonymous')
   }, [])
 
   const handleUnauthorized = useCallback(() => {
     setCSRFToken(null)
+    clearResourceCache()
     setStatus('anonymous')
   }, [])
 
@@ -78,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       body: JSON.stringify({ password }),
     })
+    clearResourceCache()
     setCSRFToken(data.csrf_token)
     setStatus('authenticated')
   }, [])

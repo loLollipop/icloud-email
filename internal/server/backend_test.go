@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,12 +37,14 @@ type fakeBackend struct {
 	loginErr     error
 	removedID    string
 	removedOK    bool
+	removedErr   error
 
 	aliasActID     string
 	aliasActActive bool
 	aliasActErr    error
 	aliasDeleteID  string
 	aliasDeleteErr error
+	aliasListCalls int
 	listInboxQuery InboxQuery
 	reloadCount    int
 }
@@ -102,9 +106,9 @@ func (f *fakeBackend) LoginAccount(id, password, otp string) (account.Summary, e
 	return f.accounts[0], nil
 }
 
-func (f *fakeBackend) RemoveAccount(id string) bool {
+func (f *fakeBackend) RemoveAccount(id string) (bool, error) {
 	f.removedID = id
-	return f.removedOK
+	return f.removedOK, f.removedErr
 }
 
 func (f *fakeBackend) CreateAlias(accountID, label string) (*hme.CreateResult, error) {
@@ -112,6 +116,7 @@ func (f *fakeBackend) CreateAlias(accountID, label string) (*hme.CreateResult, e
 }
 
 func (f *fakeBackend) ListAliases(accountID string) ([]hme.Alias, error) {
+	f.aliasListCalls++
 	return f.aliases, nil
 }
 
@@ -185,6 +190,39 @@ func TestMapUpdateCookiesErr(t *testing.T) {
 				t.Fatalf("mapUpdateCookiesErr() = %#v, want status=%d code=%q message=%q", got, tt.wantStatus, tt.wantCode, tt.wantMsg)
 			}
 		})
+	}
+}
+
+func TestManagerBackendRemoveAccountMapsPersistenceFailure(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := account.NewManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	summary, err := mgr.AddAccountWithInput(account.AddAccountInput{
+		Name: "keep", ICloudEmail: "keep@icloud.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "accounts.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := (&managerBackend{mgr: mgr}).RemoveAccount(summary.ID)
+	if removed {
+		t.Fatal("remove reported success after persistence failure")
+	}
+	be := asBackendError(err)
+	if be.Status != http.StatusInternalServerError || be.Code != "PERSISTENCE_ERROR" {
+		t.Fatalf("remove error=%#v, want 500/PERSISTENCE_ERROR", be)
+	}
+	if _, ok := mgr.GetAccount(summary.ID); !ok {
+		t.Fatal("manager lost account after failed backend removal")
 	}
 }
 

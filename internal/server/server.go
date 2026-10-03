@@ -22,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"icloud-hme/internal/account"
 	"icloud-hme/internal/auth"
+	"icloud-hme/internal/hme"
 	"icloud-hme/internal/webui"
 )
 
@@ -38,6 +39,7 @@ type Server struct {
 	be      Backend
 	auth    *auth.Manager
 	limiter *auth.Limiter
+	aliases *aliasCache
 	cfg     Config
 	r       *gin.Engine
 }
@@ -61,6 +63,7 @@ func newWithBackend(be Backend, cfg Config) *Server {
 	s := &Server{
 		be:      be,
 		limiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		aliases: newAliasCache(30 * time.Second),
 		cfg:     cfg,
 	}
 	s.auth, _ = auth.NewManager(auth.Options{
@@ -178,6 +181,7 @@ func (s *Server) createAliasHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(req.AccountID)
 	ok(c, gin.H{
 		"email":      result.Email,
 		"label":      result.Label,
@@ -278,7 +282,9 @@ func (s *Server) listAliasesHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数缺失: account_id")
 		return
 	}
-	aliases, err := s.be.ListAliases(accountID)
+	aliases, err := s.aliases.get(accountID, func() ([]hme.Alias, error) {
+		return s.be.ListAliases(accountID)
+	})
 	if err != nil {
 		backendFail(c, err)
 		return
@@ -319,6 +325,7 @@ func (s *Server) deactivateAliasHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(accountID)
 	ok(c, gin.H{"anonymous_id": anonymousID, "success": success})
 }
 
@@ -332,6 +339,7 @@ func (s *Server) reactivateAliasHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(accountID)
 	ok(c, gin.H{"anonymous_id": anonymousID, "success": success})
 }
 
@@ -344,6 +352,7 @@ func (s *Server) deleteAliasHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(accountID)
 	ok(c, gin.H{"anonymous_id": anonymousID})
 }
 
@@ -356,5 +365,6 @@ func (s *Server) reloadConfigHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidateAll()
 	ok(c, gin.H{"message": "配置已重新加载"})
 }

@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias, FullMessage, InboxResult, InboxMessage } from '../api/types'
+import {
+  invalidateResource,
+  invalidateResourcePrefix,
+  loadResource,
+  readResource,
+  resourceKeys,
+  resourceTTLs,
+} from '../api/resourceCache'
 import AsyncState from '../components/AsyncState'
 import Dialog from '../components/Dialog'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -21,16 +29,38 @@ function formatDate(raw: string): string {
   }).format(d)
 }
 
-export default function InboxPage() {
-  const [accounts, setAccounts] = useState<AccountSummary[]>([])
-  const [aliases, setAliases] = useState<Alias[]>([])
-  const [accountId, setAccountId] = useState('')
-  const [alias, setAlias] = useState('')
-  const [limit, setLimit] = useState(20)
-  const [days, setDays] = useState(7)
+function inboxQuery(accountID: string, alias: string, limit: number, days: number): string {
+  const params = new URLSearchParams({ account_id: accountID })
+  if (alias) params.set('alias', alias)
+  params.set('limit', String(limit))
+  params.set('days', String(days))
+  return params.toString()
+}
 
-  const [result, setResult] = useState<InboxResult | null>(null)
-  const [loading, setLoading] = useState(true)
+export default function InboxPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const accountChangedRef = useRef(false)
+  const accountsCached = readResource<AccountSummary[]>(resourceKeys.accounts)
+  const initialAccountID = accountsCached?.data.find((account) => account.id === searchParams.get('account_id'))?.id
+    ?? accountsCached?.data[0]?.id
+    ?? ''
+  const initialAlias = searchParams.get('alias') ?? ''
+  const requestedLimit = Number(searchParams.get('limit'))
+  const requestedDays = Number(searchParams.get('days'))
+  const initialLimit = [1, 20, 100].includes(requestedLimit) ? requestedLimit : 20
+  const initialDays = [1, 7, 30, 90].includes(requestedDays) ? requestedDays : 7
+  const initialResult = initialAccountID
+    ? readResource<InboxResult>(resourceKeys.inbox(inboxQuery(initialAccountID, initialAlias, initialLimit, initialDays)))
+    : undefined
+  const [accounts, setAccounts] = useState<AccountSummary[]>(accountsCached?.data ?? [])
+  const [aliases, setAliases] = useState<Alias[]>([])
+  const [accountId, setAccountId] = useState(initialAccountID)
+  const [alias, setAlias] = useState(initialAlias)
+  const [limit, setLimit] = useState(initialLimit)
+  const [days, setDays] = useState(initialDays)
+
+  const [result, setResult] = useState<InboxResult | null>(initialResult?.data ?? null)
+  const [loading, setLoading] = useState(!initialResult && (!accountsCached || initialAccountID !== ''))
   const [error, setError] = useState('')
   const [retryKey, setRetryKey] = useState(0)
   const [detail, setDetail] = useState<FullMessage | null>(null)
@@ -38,8 +68,7 @@ export default function InboxPage() {
   const [deleteFor, setDeleteFor] = useState<InboxMessage | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const [searchParams, setSearchParams] = useSearchParams()
-  const abortRef = useRef<AbortController | null>(null)
+  const inboxRequestRef = useRef(0)
   const detailAbortRef = useRef<AbortController | null>(null)
   const detailRequestRef = useRef(0)
   const { show } = useToast()
@@ -83,6 +112,7 @@ export default function InboxPage() {
       setDeleteFor(null)
       setDetail(null)
       show('邮件已删除')
+      invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
       setRetryKey((key) => key + 1)
     } catch (err) {
       show(err instanceof ApiError ? err.message : '删除邮件失败')
@@ -94,14 +124,16 @@ export default function InboxPage() {
   // 加载账号列表并初始化筛选状态(只保存 account_id/alias/limit/days)
   useEffect(() => {
     let cancelled = false
-    request<AccountSummary[]>('/api/accounts')
+    loadResource(resourceKeys.accounts, resourceTTLs.accounts, () => request<AccountSummary[]>('/api/accounts'))
       .then((data) => {
         if (cancelled) return
         setAccounts(data)
+        if (accountChangedRef.current) return
         const queryId = searchParams.get('account_id')
         const valid = data.find((a) => a.id === queryId)
         const target = valid ? valid.id : data[0]?.id ?? ''
         setAccountId(target)
+        if (!target) setLoading(false)
         if (target) {
           const next: Record<string, string> = { account_id: target }
           const qAlias = searchParams.get('alias')
@@ -118,10 +150,10 @@ export default function InboxPage() {
       })
       .catch((err) => {
         if (cancelled) return
-        setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!accountsCached) {
+          setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+        }
+        setLoading(false)
       })
     return () => {
       cancelled = true
@@ -133,8 +165,12 @@ export default function InboxPage() {
   useEffect(() => {
     if (!accountId) return
     let cancelled = false
-    request<{ account_id: string; count: number; aliases: Alias[] }>(
-      `/api/aliases?account_id=${encodeURIComponent(accountId)}`,
+    loadResource(
+      resourceKeys.aliases(accountId),
+      resourceTTLs.aliases,
+      () => request<{ account_id: string; count: number; aliases: Alias[] }>(
+        `/api/aliases?account_id=${encodeURIComponent(accountId)}`,
+      ),
     )
       .then((data) => {
         if (cancelled) return
@@ -149,36 +185,47 @@ export default function InboxPage() {
     }
   }, [accountId])
 
-  // 查询收件箱;账号变化时清空旧邮件并中止旧请求
+  // 查询收件箱。共享请求不随页面卸载中止，request id 防止旧查询覆盖新查询。
   useEffect(() => {
     if (!accountId) return
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+    const requestID = ++inboxRequestRef.current
     let cancelled = false
-    const params = new URLSearchParams({ account_id: accountId })
-    if (alias) params.set('alias', alias)
-    params.set('limit', String(limit))
-    params.set('days', String(days))
-    request<InboxResult>(`/api/inbox?${params.toString()}`, {
-      signal: controller.signal,
-    })
+    const query = inboxQuery(accountId, alias, limit, days)
+    const key = resourceKeys.inbox(query)
+    const cached = readResource<InboxResult>(key)
+    // Hydrate synchronously from the external cache so navigation never flashes a skeleton.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (cached) {
+      setResult(cached.data)
+      setLoading(false)
+    } else {
+      setResult(null)
+      setLoading(true)
+    }
+    /* eslint-enable react-hooks/set-state-in-effect */
+    loadResource(
+      key,
+      resourceTTLs.inbox,
+      () => request<InboxResult>(`/api/inbox?${query}`),
+      Boolean(cached),
+    )
       .then((data) => {
-        if (cancelled) return
+        if (cancelled || requestID !== inboxRequestRef.current) return
         setResult(data)
         setError('')
       })
       .catch((err) => {
-        if (cancelled || err instanceof ApiError && err.status === 0) return
-        setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
-        setResult(null)
+        if (cancelled || requestID !== inboxRequestRef.current) return
+        if (!cached) {
+          setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+          setResult(null)
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
+        if (!cancelled && requestID === inboxRequestRef.current) setLoading(false)
       })
     return () => {
       cancelled = true
-      controller.abort()
     }
   }, [accountId, alias, limit, days, retryKey])
 
@@ -190,13 +237,18 @@ export default function InboxPage() {
     next.limit = String(limit)
     next.days = String(days)
     setSearchParams(next, { replace: true })
+    invalidateResource(resourceKeys.inbox(inboxQuery(accountId, qAlias, limit, days)))
+    setLoading(true)
     setRetryKey((k) => k + 1)
   }
 
   function handleAccountChange(id: string) {
+    accountChangedRef.current = true
     setAccountId(id)
     setAlias('')
-    setResult(null)
+    const cached = readResource<InboxResult>(resourceKeys.inbox(inboxQuery(id, '', limit, days)))
+    setResult(cached?.data ?? null)
+    setLoading(!cached)
     setSearchParams({ account_id: id }, { replace: true })
   }
 
@@ -232,7 +284,9 @@ export default function InboxPage() {
             <select
               id="inbox-alias"
               value={alias}
-              onChange={(e) => setAlias(e.target.value)}
+              onChange={(e) => {
+                setAlias(e.target.value)
+              }}
             >
               <option value="">全部</option>
               {aliases.map((a) => (
@@ -247,7 +301,9 @@ export default function InboxPage() {
             <select
               id="inbox-limit"
               value={limit}
-              onChange={(e) => setLimit(Number(e.target.value))}
+              onChange={(e) => {
+                setLimit(Number(e.target.value))
+              }}
             >
               <option value={1}>1</option>
               <option value={20}>20</option>
@@ -259,7 +315,9 @@ export default function InboxPage() {
             <select
               id="inbox-days"
               value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
+              onChange={(e) => {
+                setDays(Number(e.target.value))
+              }}
             >
               <option value={1}>1 天</option>
               <option value={7}>7 天</option>
@@ -281,6 +339,7 @@ export default function InboxPage() {
         empty={!result || result.messages.length === 0}
         emptyText="暂无邮件"
         onRetry={() => {
+          if (accountId) invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
           setLoading(true)
           setRetryKey((k) => k + 1)
         }}

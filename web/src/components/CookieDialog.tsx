@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Dialog from './Dialog'
 import { request, ApiError } from '../api/client'
+import { invalidateResource, invalidateResourcePrefix, resourceKeys } from '../api/resourceCache'
 
 interface CookieDialogProps {
   accountId: string
@@ -23,6 +24,8 @@ export default function CookieDialog({ accountId, open, onClose, onSaved }: Cook
     }
     setSubmitting(true)
     setError('')
+    invalidateResource(resourceKeys.aliases(accountId))
+    invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
     try {
       await request(`/api/accounts/${accountId}/cookies`, {
         method: 'PUT',
@@ -30,7 +33,8 @@ export default function CookieDialog({ accountId, open, onClose, onSaved }: Cook
       })
       setCookies('')
       onSaved()
-    } catch (err) {      setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : '网络连接失败，请检查服务状态')
     } finally {
       setSubmitting(false)
     }

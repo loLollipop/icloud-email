@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import AliasesPage from './AliasesPage'
 import { server } from '../test/server'
 import { setCSRFToken } from '../api/client'
+import { loadResource, resourceKeys } from '../api/resourceCache'
 import { ToastProvider } from '../components/ToastProvider'
 import type { AccountSummary, Alias } from '../api/types'
 
@@ -165,6 +166,56 @@ describe('AliasesPage', () => {
 
     resolveAliases?.()
     expect(await screen.findByText('alpha@icloud.com')).toBeInTheDocument()
+  })
+
+  it('重新挂载时立即使用会话缓存且不重复请求', async () => {
+    let aliasRequests = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () => {
+        aliasRequests++
+        return HttpResponse.json({
+          success: true,
+          data: { account_id: 'acc_1', count: 2, aliases },
+        })
+      }),
+    )
+    const first = renderPage()
+    await screen.findByText('alpha@icloud.com')
+    first.unmount()
+
+    renderPage()
+    expect(screen.getByText('alpha@icloud.com')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: /加载中/ })).toBeNull()
+    await waitFor(() => expect(aliasRequests).toBe(1))
+  })
+
+  it('后台账号刷新不会覆盖用户刚选择的账号', async () => {
+    await loadResource(resourceKeys.accounts, -1, async () => accounts)
+    let releaseAccounts: (() => void) | undefined
+    let markAccountsStarted: (() => void) | undefined
+    const accountsStarted = new Promise<void>((resolve) => { markAccountsStarted = resolve })
+    server.use(
+      http.get('/api/accounts', () => new Promise<Response>((resolve) => {
+        markAccountsStarted?.()
+        releaseAccounts = () => resolve(HttpResponse.json({ success: true, data: accounts }))
+      })),
+      http.get('/api/aliases', ({ request }) => {
+        const id = new URL(request.url).searchParams.get('account_id')
+        return HttpResponse.json({
+          success: true,
+          data: { account_id: id, count: 1, aliases: id === 'acc_2' ? [aliases[1]] : [aliases[0]] },
+        })
+      }),
+    )
+
+    renderPage()
+    await accountsStarted
+    await userEvent.selectOptions(screen.getByLabelText(/账号/), 'acc_2')
+    releaseAccounts?.()
+
+    await waitFor(() => expect(screen.getByLabelText(/账号/)).toHaveValue('acc_2'))
+    expect(await screen.findByText('beta@icloud.com')).toBeInTheDocument()
   })
 
   it('按 email/label 大小写不敏感搜索与 active 状态筛选', async () => {

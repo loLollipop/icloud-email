@@ -50,7 +50,7 @@ type Backend interface {
 	SetAppPassword(string, string, string) (account.Summary, error)
 	SetMailbox(string, account.MailboxConfig) (account.Summary, error)
 	LoginAccount(string, string, string) (account.Summary, error)
-	RemoveAccount(string) bool
+	RemoveAccount(string) (bool, error)
 	CreateAlias(string, string) (*hme.CreateResult, error)
 	ListAliases(string) ([]hme.Alias, error)
 	SetAliasActive(string, string, bool) (bool, error)
@@ -199,51 +199,58 @@ func classifyLoginErr(err error) *BackendError {
 }
 
 // RemoveAccount 删除账号。
-func (b *managerBackend) RemoveAccount(id string) bool {
-	return b.mgr.RemoveAccount(id)
+func (b *managerBackend) RemoveAccount(id string) (bool, error) {
+	removed, err := b.mgr.RemoveAccount(id)
+	if err != nil {
+		var persistenceErr *account.PersistenceError
+		if errors.As(err, &persistenceErr) {
+			return false, &BackendError{Status: http.StatusInternalServerError, Code: "PERSISTENCE_ERROR", Message: "账号删除保存失败"}
+		}
+		return false, mapAccountErr(err)
+	}
+	return removed, nil
 }
 
 // CreateAlias 创建 HME 别名。
 func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult, error) {
-	client, err := b.mgr.HMEClient(accountID, false)
+	var result *hme.CreateResult
+	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+		var operationErr error
+		result, operationErr = client.CreateAlias(label, 5)
+		return operationErr
+	})
 	if err != nil {
-		return nil, mapAccountErr(err)
-	}
-	result, err := client.CreateAlias(label, 5)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
-	if err != nil {
-		return nil, classifyUpstreamErr("创建邮箱失败", err)
+		return nil, mapHMEOperationErr("创建邮箱失败", err)
 	}
 	return result, nil
 }
 
 // ListAliases 列出账号的 HME 别名。
 func (b *managerBackend) ListAliases(accountID string) ([]hme.Alias, error) {
-	client, err := b.mgr.HMEClient(accountID, false)
+	var aliases []hme.Alias
+	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+		var operationErr error
+		aliases, operationErr = client.ListAliases()
+		return operationErr
+	})
 	if err != nil {
-		return nil, mapAccountErr(err)
-	}
-	aliases, err := client.ListAliases()
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
-	if err != nil {
-		return nil, classifyUpstreamErr("获取别名列表失败", err)
+		return nil, mapHMEOperationErr("获取别名列表失败", err)
 	}
 	return aliases, nil
 }
 
 // SetAliasActive 停用或激活别名。
 func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bool) (bool, error) {
-	client, err := b.mgr.HMEClient(accountID, false)
-	if err != nil {
-		return false, mapAccountErr(err)
-	}
 	var success bool
-	if active {
-		success, err = client.ReactivateHME(anonymousID)
-	} else {
-		success, err = client.DeactivateHME(anonymousID)
-	}
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
+	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+		var operationErr error
+		if active {
+			success, operationErr = client.ReactivateHME(anonymousID)
+		} else {
+			success, operationErr = client.DeactivateHME(anonymousID)
+		}
+		return operationErr
+	})
 	if err != nil {
 		msg := "操作失败"
 		if !active {
@@ -251,21 +258,18 @@ func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bo
 		} else {
 			msg = "激活失败"
 		}
-		return false, classifyUpstreamErr(msg, err)
+		return false, mapHMEOperationErr(msg, err)
 	}
 	return success, nil
 }
 
 // DeleteAlias 删除别名。
 func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
-	client, err := b.mgr.HMEClient(accountID, false)
+	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+		return client.Delete(anonymousID)
+	})
 	if err != nil {
-		return mapAccountErr(err)
-	}
-	err = client.Delete(anonymousID)
-	_ = b.mgr.SaveCookies(accountID, client.Cookies)
-	if err != nil {
-		return classifyUpstreamErr("删除失败", err)
+		return mapHMEOperationErr("删除失败", err)
 	}
 	return nil
 }
@@ -363,6 +367,17 @@ func mapAccountErr(err error) *BackendError {
 		return &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: "账号未配置 Cookie"}
 	}
 	return &BackendError{Status: http.StatusBadRequest, Code: "VALIDATION_ERROR", Message: msg}
+}
+
+func mapHMEOperationErr(message string, err error) *BackendError {
+	if strings.Contains(err.Error(), "账号不存在") || strings.Contains(err.Error(), "未配置 Cookie") {
+		return mapAccountErr(err)
+	}
+	var persistenceErr *account.PersistenceError
+	if errors.As(err, &persistenceErr) {
+		return &BackendError{Status: http.StatusInternalServerError, Code: "PERSISTENCE_ERROR", Message: "Cookie 保存失败"}
+	}
+	return classifyUpstreamErr(message, err)
 }
 
 // classifyUpstreamErr 把上游 (iCloud) 错误映射为稳定错误,不拼接上游响应体。

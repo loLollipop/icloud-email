@@ -71,6 +71,7 @@ func (s *Server) updateAccountHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(id)
 	ok(c, sum)
 }
 
@@ -92,6 +93,7 @@ func (s *Server) updateProxyHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(id)
 	ok(c, sum)
 }
 
@@ -121,6 +123,10 @@ func (s *Server) updateCookiesHandler(c *gin.Context) {
 		raw = cookieInputToJSON(asMap)
 	}
 
+	// Cookie validation may refresh and persist session cookies even when the
+	// operation ultimately reports an error, so cached identity data is stale.
+	s.aliases.invalidate(id)
+	defer s.aliases.invalidate(id)
 	sum, err := s.be.UpdateCookies(id, raw)
 	if err != nil {
 		backendFail(c, err)
@@ -148,6 +154,7 @@ func (s *Server) setAppPasswordHandler(c *gin.Context) {
 		backendFail(c, err)
 		return
 	}
+	s.aliases.invalidate(id)
 	ok(c, sum)
 }
 
@@ -191,6 +198,10 @@ func (s *Server) loginAccountHandler(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "参数错误: password 必填")
 		return
 	}
+	// Login/OTP attempts may persist refreshed cookies before returning an
+	// error, so invalidate aliases on every backend path.
+	s.aliases.invalidate(id)
+	defer s.aliases.invalidate(id)
 	sum, err := s.be.LoginAccount(id, req.Password, req.OTPCode)
 	if err != nil {
 		backendFail(c, err)
@@ -202,9 +213,15 @@ func (s *Server) loginAccountHandler(c *gin.Context) {
 // removeAccountHandler 处理 DELETE /api/accounts/:id。
 func (s *Server) removeAccountHandler(c *gin.Context) {
 	id := c.Param("id")
-	if !s.be.RemoveAccount(id) {
+	removed, err := s.be.RemoveAccount(id)
+	if err != nil {
+		backendFail(c, err)
+		return
+	}
+	if !removed {
 		failCode(c, http.StatusNotFound, "ACCOUNT_NOT_FOUND", "账号不存在")
 		return
 	}
+	s.aliases.invalidate(id)
 	ok(c, gin.H{"id": id})
 }

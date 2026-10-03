@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import InboxPage from './InboxPage'
 import { server } from '../test/server'
 import { setCSRFToken } from '../api/client'
+import { loadResource, resourceKeys } from '../api/resourceCache'
 import { ToastProvider } from '../components/ToastProvider'
 import type { AccountSummary, FullMessage, InboxResult } from '../api/types'
 
@@ -242,6 +243,102 @@ describe('InboxPage', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(screen.getByText('第二请求主题')).toBeInTheDocument()
     expect(screen.queryByText('旧主题')).toBeNull()
+  })
+
+  it('重新挂载先显示缓存并在后台刷新最新邮件', async () => {
+    let inboxRequests = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => {
+        inboxRequests++
+        return HttpResponse.json({
+          success: true,
+          data: {
+            ...inboxResult,
+            messages: [{
+              ...inboxResult.messages[0],
+              subject: inboxRequests === 1 ? '缓存主题' : '刷新主题',
+            }],
+          },
+        })
+      }),
+    )
+
+    const first = renderPage()
+    await screen.findByText('缓存主题')
+    first.unmount()
+
+    renderPage()
+    expect(screen.getByText('缓存主题')).toBeInTheDocument()
+    expect(screen.queryByRole('status', { name: /加载中/ })).toBeNull()
+    expect(await screen.findByText('刷新主题')).toBeInTheDocument()
+    expect(inboxRequests).toBe(2)
+  })
+
+  it('后台账号刷新不会覆盖用户刚选择的账号', async () => {
+    const secondAccount: AccountSummary = { ...accounts[0], id: 'acc_2', name: '备用号' }
+    const accountOptions = [...accounts, secondAccount]
+    await loadResource(resourceKeys.accounts, -1, async () => accountOptions)
+    let releaseAccounts: (() => void) | undefined
+    let markAccountsStarted: (() => void) | undefined
+    const accountsStarted = new Promise<void>((resolve) => { markAccountsStarted = resolve })
+    server.use(
+      http.get('/api/accounts', () => new Promise<Response>((resolve) => {
+        markAccountsStarted?.()
+        releaseAccounts = () => resolve(HttpResponse.json({ success: true, data: accountOptions }))
+      })),
+      http.get('/api/inbox', ({ request }) => {
+        const id = new URL(request.url).searchParams.get('account_id')
+        return HttpResponse.json({
+          success: true,
+          data: { ...inboxResult, account_id: id, messages: [{ ...inboxResult.messages[0], subject: id ?? '' }] },
+        })
+      }),
+    )
+
+    renderPage()
+    await accountsStarted
+    await userEvent.selectOptions(screen.getByLabelText(/账号/), 'acc_2')
+    releaseAccounts?.()
+
+    await waitFor(() => expect(screen.getByLabelText(/账号/)).toHaveValue('acc_2'))
+    expect(await screen.findByText('acc_2')).toBeInTheDocument()
+  })
+
+  it('账号列表待加载时修改普通筛选仍会初始化默认账号', async () => {
+    let releaseAccounts: (() => void) | undefined
+    let markAccountsStarted: (() => void) | undefined
+    const accountsStarted = new Promise<void>((resolve) => { markAccountsStarted = resolve })
+    let inboxURL = ''
+    server.use(
+      http.get('/api/accounts', () => new Promise<Response>((resolve) => {
+        markAccountsStarted?.()
+        releaseAccounts = () => resolve(HttpResponse.json({ success: true, data: accounts }))
+      })),
+      http.get('/api/aliases', () => HttpResponse.json({
+        success: true,
+        data: { account_id: 'acc_1', count: 0, aliases: [] },
+      })),
+      http.get('/api/inbox', ({ request }) => {
+        inboxURL = request.url
+        return HttpResponse.json({ success: true, data: inboxResult })
+      }),
+    )
+
+    renderPage()
+    await accountsStarted
+    const user = userEvent.setup()
+    await user.selectOptions(screen.getByLabelText(/每页/), '100')
+    await user.selectOptions(screen.getByLabelText(/时间范围/), '30')
+    releaseAccounts?.()
+
+    await waitFor(() => expect(screen.getByLabelText(/账号/)).toHaveValue('acc_1'))
+    await screen.findByText('主题一')
+    const query = new URL(inboxURL).searchParams
+    expect(query.get('account_id')).toBe('acc_1')
+    expect(query.get('limit')).toBe('100')
+    expect(query.get('days')).toBe('30')
+    expect(screen.queryByRole('status', { name: /加载中/ })).toBeNull()
   })
 
   it('空 subject 显示(无主题)', async () => {

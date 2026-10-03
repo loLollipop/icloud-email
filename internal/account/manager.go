@@ -48,13 +48,88 @@ type MailboxConfig struct {
 	Password string `json:"password,omitempty"`
 }
 
+type mailClientPool interface {
+	DoConfig(key, username, password, server string, port int, fn func(*mail.Client) error) error
+	Drop(key string)
+	Close()
+}
+
 // Manager 管理多个 iCloud 账号,线程安全。
 type Manager struct {
 	mu       sync.RWMutex
 	accounts map[string]*Account
 	dataDir  string
 	dataFile string
-	imapPool *mail.Pool // IMAP 长连接池
+	imapPool mailClientPool // IMAP 长连接池
+	// cookieValidator is replaceable by same-package tests to deterministically
+	// exercise UpdateCookies without contacting iCloud.
+	cookieValidator cookieSessionValidator
+	// reloadSnapshotRead is a test synchronization hook invoked after Reload
+	// has fully parsed its disk snapshot and before it waits for lifecycle users.
+	reloadSnapshotRead func()
+
+	// Configuration commits take locks in this order:
+	// reloadConfigMu.RLock -> lifecycleMu.RLock -> account guard -> mu -> pool.
+	// Reload instead takes reloadConfigMu.Lock -> lifecycleMu.Lock -> mu -> pool,
+	// covering both its disk snapshot read and the eventual in-memory switch.
+	// Session/network operations intentionally omit reloadConfigMu and start at
+	// lifecycleMu so an operation already in flight can finish while Reload waits.
+	reloadConfigMu sync.RWMutex
+	lifecycleMu    sync.RWMutex
+	accountGuardMu sync.Mutex
+	accountGuards  map[string]*sync.RWMutex
+}
+
+func (m *Manager) accountGuard(id string) *sync.RWMutex {
+	m.accountGuardMu.Lock()
+	defer m.accountGuardMu.Unlock()
+	if m.accountGuards == nil {
+		m.accountGuards = make(map[string]*sync.RWMutex)
+	}
+	guard := m.accountGuards[id]
+	if guard == nil {
+		guard = &sync.RWMutex{}
+		m.accountGuards[id] = guard
+	}
+	return guard
+}
+
+func (m *Manager) lockAccountRead(id string) func() {
+	m.lifecycleMu.RLock()
+	guard := m.accountGuard(id)
+	guard.RLock()
+	return func() {
+		guard.RUnlock()
+		m.lifecycleMu.RUnlock()
+	}
+}
+
+func (m *Manager) lockAccount(id string) func() {
+	m.lifecycleMu.RLock()
+	guard := m.accountGuard(id)
+	guard.Lock()
+	return func() {
+		guard.Unlock()
+		m.lifecycleMu.RUnlock()
+	}
+}
+
+func (m *Manager) lockConfigMutation() func() {
+	m.reloadConfigMu.RLock()
+	m.lifecycleMu.RLock()
+	return func() {
+		m.lifecycleMu.RUnlock()
+		m.reloadConfigMu.RUnlock()
+	}
+}
+
+func (m *Manager) lockAccountConfigMutation(id string) func() {
+	m.reloadConfigMu.RLock()
+	unlockAccount := m.lockAccount(id)
+	return func() {
+		unlockAccount()
+		m.reloadConfigMu.RUnlock()
+	}
 }
 
 // cloneCookies 返回 Cookie map 的独立副本。
@@ -85,10 +160,12 @@ func NewManager(dataDir string) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		accounts: make(map[string]*Account),
-		dataDir:  dataDir,
-		dataFile: filepath.Join(dataDir, "accounts.json"),
-		imapPool: mail.NewPool(),
+		accounts:        make(map[string]*Account),
+		dataDir:         dataDir,
+		dataFile:        filepath.Join(dataDir, "accounts.json"),
+		imapPool:        mail.NewPool(),
+		cookieValidator: validateCookieSession,
+		accountGuards:   make(map[string]*sync.RWMutex),
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -98,6 +175,8 @@ func NewManager(dataDir string) (*Manager, error) {
 
 // Close 释放 IMAP 连接池等资源。
 func (m *Manager) Close() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	if m.imapPool != nil {
 		m.imapPool.Close()
 	}
@@ -105,38 +184,82 @@ func (m *Manager) Close() {
 
 // Reload 重新加载 accounts.json 配置文件。
 func (m *Manager) Reload() error {
+	m.reloadConfigMu.Lock()
+	defer m.reloadConfigMu.Unlock()
+
+	accounts, err := m.readAccounts()
+	if err != nil {
+		return err
+	}
+	if m.reloadSnapshotRead != nil {
+		m.reloadSnapshotRead()
+	}
+
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.load()
+	if accounts != nil {
+		// Persist the snapshot while the old in-memory state is still available.
+		// This both repairs any stale writeback from an operation that Reload had
+		// to wait for and lets a write failure leave memory and the pool untouched.
+		if err := m.saveAccounts(accounts); err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		m.accounts = accounts
+	}
+	m.mu.Unlock()
+	if m.imapPool != nil {
+		m.imapPool.Close()
+	}
+	return nil
 }
 
 func (m *Manager) load() error {
+	accounts, err := m.readAccounts()
+	if err != nil {
+		return err
+	}
+	// Historically a missing file was a no-op because NewManager preinitializes
+	// an empty map. Preserve that behavior for direct load callers.
+	if accounts != nil {
+		m.accounts = accounts
+	}
+	return nil
+}
+
+// readAccounts reads and parses a complete, independently owned disk snapshot.
+func (m *Manager) readAccounts() (map[string]*Account, error) {
 	raw, err := os.ReadFile(m.dataFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	var wrapper struct {
 		Accounts map[string]*Account `json:"accounts"`
 	}
 	if err := json.Unmarshal(raw, &wrapper); err != nil {
-		return err
+		return nil, err
 	}
-	m.accounts = wrapper.Accounts
-	if m.accounts == nil {
-		m.accounts = make(map[string]*Account)
+	if wrapper.Accounts == nil {
+		wrapper.Accounts = make(map[string]*Account)
 	}
-	return nil
+	return wrapper.Accounts, nil
 }
 
 func (m *Manager) save() error {
+	return m.saveAccounts(m.accounts)
+}
+
+func (m *Manager) saveAccounts(accounts map[string]*Account) error {
 	wrapper := struct {
 		Accounts  map[string]*Account `json:"accounts"`
 		UpdatedAt string              `json:"updated_at"`
 	}{
-		Accounts:  m.accounts,
+		Accounts:  accounts,
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 	raw, err := json.MarshalIndent(wrapper, "", "  ")
@@ -249,6 +372,9 @@ func (m *Manager) AddAccount(name, cookieInput, host, proxy string) (*Account, e
 	if err != nil {
 		return nil, err
 	}
+	unlockConfig := m.lockConfigMutation()
+	defer unlockConfig()
+
 	m.mu.Lock()
 	m.accounts[acc.ID] = acc
 	saveErr := m.save()
@@ -282,6 +408,9 @@ func (m *Manager) AddAccountWithInput(input AddAccountInput) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	unlockConfig := m.lockConfigMutation()
+	defer unlockConfig()
+
 	m.mu.Lock()
 	m.accounts[acc.ID] = acc
 	saveErr := m.save()
@@ -391,12 +520,16 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 		host = &v
 	}
 
+	unlockAccount := m.lockAccountConfigMutation(id)
+	defer unlockAccount()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
 	if !ok {
+		m.mu.Unlock()
 		return Summary{}, fmt.Errorf("账号不存在: %s", id)
 	}
+	mailConfigChanged := email != nil && acc.ICloudEmail != *email
 	if name != nil {
 		acc.Name = *name
 	}
@@ -406,10 +539,17 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 	if host != nil {
 		acc.Host = *host
 	}
-	if err := m.save(); err != nil {
-		return Summary{}, err
+	saveErr := m.save()
+	summary := acc.Summary()
+	m.mu.Unlock()
+
+	if mailConfigChanged && m.imapPool != nil {
+		m.imapPool.Drop(id)
 	}
-	return acc.Summary(), nil
+	if saveErr != nil {
+		return Summary{}, saveErr
+	}
+	return summary, nil
 }
 
 // UpdateProxy 更新或清除账号代理。空字符串表示清除。
@@ -418,6 +558,9 @@ func (m *Manager) UpdateProxy(id, proxy string) (Summary, error) {
 	if err != nil {
 		return Summary{}, err
 	}
+	unlockAccount := m.lockAccountConfigMutation(id)
+	defer unlockAccount()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
@@ -432,15 +575,27 @@ func (m *Manager) UpdateProxy(id, proxy string) (Summary, error) {
 }
 
 // RemoveAccount 删除账号。
-func (m *Manager) RemoveAccount(id string) bool {
+func (m *Manager) RemoveAccount(id string) (bool, error) {
+	unlockAccount := m.lockAccountConfigMutation(id)
+	defer unlockAccount()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.accounts[id]; !ok {
-		return false
+	acc, ok := m.accounts[id]
+	if !ok {
+		m.mu.Unlock()
+		return false, nil
 	}
 	delete(m.accounts, id)
-	_ = m.save()
-	return true
+	if err := m.save(); err != nil {
+		m.accounts[id] = acc
+		m.mu.Unlock()
+		return false, &PersistenceError{Err: err}
+	}
+	m.mu.Unlock()
+	if m.imapPool != nil {
+		m.imapPool.Drop(id)
+	}
+	return true, nil
 }
 
 // GetAccount 返回账号深拷贝(含 Cookies),调用方可安全使用。
@@ -508,9 +663,9 @@ func statusRank(status string) int {
 	}
 }
 
-// HMEClient 为指定账号创建一个新的 HME 客户端。
+// newHMEClientLocked 为已持有账号生命周期锁的调用方创建 HME 客户端。
 // 必须有有效的 Cookie 才能使用 HME 功能。
-func (m *Manager) HMEClient(id string, verbose bool) (*hme.Client, error) {
+func (m *Manager) newHMEClientLocked(id string, verbose bool) (*hme.Client, error) {
 	m.mu.RLock()
 	acc, ok := m.accounts[id]
 	var snap *Account
@@ -527,9 +682,30 @@ func (m *Manager) HMEClient(id string, verbose bool) (*hme.Client, error) {
 	return hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, verbose)
 }
 
+// WithHMEClient 在账号级独占会话中执行一次 HME 操作，并在释放会话前保存
+// 服务端刷新的 Cookie。同一账号的 HME 操作、显式 Cookie 更新和登录串行，
+// 不同账号之间仍可并发。
+func (m *Manager) WithHMEClient(id string, verbose bool, fn func(*hme.Client) error) error {
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+
+	client, err := m.newHMEClientLocked(id, verbose)
+	if err != nil {
+		return err
+	}
+	operationErr := fn(client)
+	if saveErr := m.saveCookiesLocked(id, client.Cookies); saveErr != nil && operationErr == nil {
+		return &PersistenceError{Err: saveErr}
+	}
+	return operationErr
+}
+
 // HMEClientWithPassword 为指定账号创建一个新的 HME 客户端,使用账号密码登录。
 // 登录成功后会自动获取 Cookie 并保存到账号配置。
 func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTPProvider) (*hme.Client, error) {
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+
 	m.mu.RLock()
 	acc, ok := m.accounts[id]
 	var snap *Account
@@ -562,12 +738,12 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 
 	// 先保存 accountLogin 返回的 Cookie，随后通过 validate 刷新会话并再次持久化。
 	// 国区与美区都走同一条刷新链路，避免只保存登录阶段的临时 token。
-	if err := m.SaveCookies(id, client.Cookies); err != nil {
+	if err := m.saveCookiesLocked(id, client.Cookies); err != nil {
 		return nil, err
 	}
 	if err := client.ValidateSession(); err != nil {
 		// validate 的失败响应也可能携带 Set-Cookie，尽量保留服务端最新状态。
-		_ = m.SaveCookies(id, client.Cookies)
+		_ = m.saveCookiesLocked(id, client.Cookies)
 		return nil, err
 	}
 
@@ -582,6 +758,7 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 	cur.Status = "active"
 	cur.LastValidated = time.Now().Format(time.RFC3339)
 	cur.LastError = ""
+	oldRealEmail, oldICloudEmail := cur.RealEmail, cur.ICloudEmail
 	if info := client.AccountInfo(); info != nil {
 		cur.RealEmail = firstNonEmpty(info.AppleID, info.PrimaryEmail)
 		if cur.ICloudEmail == "" {
@@ -589,7 +766,11 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 		}
 	}
 	saveErr := m.save()
+	mailConfigChanged := cur.RealEmail != oldRealEmail || cur.ICloudEmail != oldICloudEmail
 	m.mu.Unlock()
+	if mailConfigChanged && m.imapPool != nil {
+		m.imapPool.Drop(id)
+	}
 	if saveErr != nil {
 		return nil, saveErr
 	}
@@ -630,54 +811,40 @@ func (m *Manager) MailClient(id string) (*mail.Client, error) {
 // WithMailClient 使用连接池中的长连接执行 fn(串行/账号级)。
 // fn 返回后连接保留在池中, 不会 Logout。
 func (m *Manager) WithMailClient(id string, fn func(*mail.Client) error) error {
-	m.mu.RLock()
-	acc, ok := m.accounts[id]
-	var mailbox *MailboxConfig
-	if ok && acc.Mailbox != nil {
-		copy := *acc.Mailbox
-		mailbox = &copy
-	}
-	m.mu.RUnlock()
-	if mailbox != nil && mailbox.Email != "" && mailbox.Password != "" {
-		mc := mail.NewClientWithServer(mailbox.Email, mailbox.Password, mailbox.IMAPHost, mailbox.IMAPPort)
-		if err := mc.Connect(); err != nil {
-			return err
-		}
-		defer mc.Disconnect()
-		return fn(mc)
-	}
-	imapEmail, appPassword, err := m.imapCreds(id)
-	if err != nil {
-		return err
-	}
-	if m.imapPool == nil {
-		m.imapPool = mail.NewPool()
-	}
-	return m.imapPool.Do(imapEmail, appPassword, fn)
-}
+	unlockAccount := m.lockAccountRead(id)
+	defer unlockAccount()
 
-func (m *Manager) imapCreds(id string) (imapEmail, appPassword string, err error) {
 	m.mu.RLock()
 	acc, ok := m.accounts[id]
-	var snap *Account
-	if ok {
-		snap = copyAccount(acc)
-	}
-	m.mu.RUnlock()
 	if !ok {
-		return "", "", fmt.Errorf("账号不存在: %s", id)
+		m.mu.RUnlock()
+		return fmt.Errorf("账号不存在: %s", id)
 	}
-	imapEmail = snap.ICloudEmail
+	pool := m.imapPool
+	if pool == nil {
+		m.mu.RUnlock()
+		return fmt.Errorf("IMAP 连接池未初始化")
+	}
+
+	if mailbox := acc.Mailbox; mailbox != nil && mailbox.Email != "" && mailbox.Password != "" {
+		username, password := mailbox.Email, mailbox.Password
+		server, port := mailbox.IMAPHost, mailbox.IMAPPort
+		m.mu.RUnlock()
+		return pool.DoConfig(id, username, password, server, port, fn)
+	}
+	imapEmail := acc.ICloudEmail
 	if imapEmail == "" {
-		imapEmail = snap.RealEmail
+		imapEmail = acc.RealEmail
 	}
+	appPassword := acc.AppPassword
+	m.mu.RUnlock()
 	if !isICloudDomain(imapEmail) {
-		return "", "", fmt.Errorf("账号未设置 iCloud 邮箱 (当前: %s)", imapEmail)
+		return fmt.Errorf("账号未设置 iCloud 邮箱 (当前: %s)", imapEmail)
 	}
-	if snap.AppPassword == "" {
-		return "", "", fmt.Errorf("账号未设置 App 专用密码")
+	if appPassword == "" {
+		return fmt.Errorf("账号未设置 App 专用密码")
 	}
-	return imapEmail, snap.AppPassword, nil
+	return pool.DoConfig(id, imapEmail, appPassword, mail.IMAPServer, mail.IMAPPort, fn)
 }
 
 // SetMailbox validates and stores an external IMAP mailbox after testing it.
@@ -706,14 +873,22 @@ func (m *Manager) SetMailbox(id string, config MailboxConfig) error {
 	if err != nil {
 		return err
 	}
+	unlockAccount := m.lockAccountConfigMutation(id)
+	defer unlockAccount()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.Mailbox = &config
-	return m.save()
+	saveErr := m.save()
+	m.mu.Unlock()
+	if m.imapPool != nil {
+		m.imapPool.Drop(id)
+	}
+	return saveErr
 }
 
 // WebMailClient 为指定账号创建 Web 邮件客户端。
@@ -771,24 +946,36 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 		return err
 	}
 
+	unlockAccount := m.lockAccountConfigMutation(id)
+	defer unlockAccount()
+
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.ICloudEmail = icloudEmail
 	acc.AppPassword = appPassword
-	if err := m.save(); err != nil {
-		return err
+	saveErr := m.save()
+	m.mu.Unlock()
+	if m.imapPool != nil {
+		m.imapPool.Drop(id)
 	}
 	_ = count
-	return nil
+	return saveErr
 }
 
-// SaveCookies 保存指定账号的最新 Cookie（HMEClient 操作后刷新的 token）。
+// SaveCookies 保存指定账号的最新 Cookie（HME 操作后刷新的 token）。
 // 用于客户端 validate/操作过程中从 Set-Cookie 获取了新 token 后持久化。
 func (m *Manager) SaveCookies(id string, cookies map[string]string) error {
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+	return m.saveCookiesLocked(id, cookies)
+}
+
+// saveCookiesLocked 在调用方持有账号生命周期独占锁时保存 Cookie。
+func (m *Manager) saveCookiesLocked(id string, cookies map[string]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
@@ -801,9 +988,30 @@ func (m *Manager) SaveCookies(id string, cookies map[string]string) error {
 
 // UpdateCookies 更新指定账号的 Cookie,并自动校验会话有效性。
 func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
+	validate := m.cookieValidator
+	if validate == nil {
+		validate = validateCookieSession
+	}
+	return m.updateCookies(id, cookies, validate)
+}
+
+type cookieSessionValidator func(*Account) (*hme.Client, error)
+
+func validateCookieSession(snap *Account) (*hme.Client, error) {
+	client, err := hme.NewClient(snap.Cookies, snap.Host, snap.Proxy, false)
+	if err != nil {
+		return nil, err
+	}
+	return client, client.ValidateSession()
+}
+
+func (m *Manager) updateCookies(id string, cookies map[string]string, validate cookieSessionValidator) error {
 	if len(cookies) == 0 {
 		return fmt.Errorf("cookies 不能为空")
 	}
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+
 	m.mu.RLock()
 	acc, ok := m.accounts[id]
 	var snap *Account
@@ -820,12 +1028,11 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 	if snap.Host == "" {
 		snap.Host = "icloud.com"
 	}
-	client, err := hme.NewClient(cookies, snap.Host, snap.Proxy, false)
-	validationErr := err
-	if err != nil {
+	client, validationErr := validate(snap)
+	if client == nil {
 		snap.Status = "error"
-		snap.LastError = "创建客户端失败: " + err.Error()
-	} else if validationErr = client.ValidateSession(); validationErr != nil {
+		snap.LastError = "创建客户端失败: " + validationErr.Error()
+	} else if validationErr != nil {
 		// validate 即使失败也可能通过 Set-Cookie 刷新部分会话状态。
 		snap.Cookies = client.Cookies
 		snap.Status = "error"
@@ -850,6 +1057,7 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("账号不存在: %s", id)
 	}
+	oldRealEmail, oldICloudEmail := cur.RealEmail, cur.ICloudEmail
 	cur.Cookies = snap.Cookies
 	cur.Status = snap.Status
 	cur.LastValidated = snap.LastValidated
@@ -859,7 +1067,11 @@ func (m *Manager) UpdateCookies(id string, cookies map[string]string) error {
 		cur.ICloudEmail = snap.ICloudEmail
 	}
 	saveErr := m.save()
+	mailConfigChanged := cur.RealEmail != oldRealEmail || cur.ICloudEmail != oldICloudEmail
 	m.mu.Unlock()
+	if mailConfigChanged && m.imapPool != nil {
+		m.imapPool.Drop(id)
+	}
 	if saveErr != nil {
 		return &PersistenceError{Err: saveErr}
 	}
