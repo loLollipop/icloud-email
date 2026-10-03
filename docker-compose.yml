@@ -1,0 +1,40 @@
+services:
+  app:
+    image: local/icloud-hme:20261002-r1
+    build:
+      context: .
+    container_name: icloud-hme
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    cpus: 1.0
+    mem_limit: 768m
+    mem_reservation: 128m
+    pids_limit: 256
+    ports:
+      - "127.0.0.1:18788:8081"
+    environment:
+      TZ: Asia/Shanghai
+      ICLOUD_HME_ADMIN_PASSWORD: "${ICLOUD_HME_ADMIN_PASSWORD:?set ICLOUD_HME_ADMIN_PASSWORD in .env}"
+      ICLOUD_HME_SESSION_TTL: "12h"
+      ICLOUD_HME_SECURE_COOKIE: "true"
+    volumes:
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8081/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

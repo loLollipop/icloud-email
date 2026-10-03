@@ -1,0 +1,29 @@
+# Binary
+/grok2api.exe
+/grok2api.exe~
+
+# Runtime data
+/data/
+/logs/
+
+# Environment
+/.env
+CLAUDE.md
+# Claude sessions
+/.claude/
+docs/
+.ccg/
+.superpowers/
+# Web frontend build output & deps
+/web/node_modules/
+/internal/webui/dist/*
+!/internal/webui/dist/placeholder.txt
+!capture_statsig_pair.js
+!capture_statsig_pair_v5.js
+# Temp / test files
+/fresh-req.json
+reverse_task/
+js
+accounts.json
+*.exe
+build/

@@ -1,0 +1,12 @@
+.git
+.env*
+data
+accounts.json
+accounts.json.*
+*.pem
+*.key
+*.p12
+*.pfx
+web/node_modules
+build
+*.log
