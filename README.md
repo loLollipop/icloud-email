@@ -176,6 +176,7 @@ GET /api/inbox?account_id=acc_1&page=1&page_size=20&q=欢迎&field=all
 #   page_size  - 每页邮件数量 (默认 20)
 #   q          - 可选: 搜索主题、邮箱、正文中的关键词
 #   field      - all / subject / from / to / body (默认 all)
+# 网页仅搜索邮件主题，不匹配正文或发件人；API 保留其他字段供兼容调用。
 # 不传 days 时搜索全部历史，不需要先设置时间或加载范围。
 # 未传 page 的旧 limit/days 模式仍兼容，详情见 API.md。
 

@@ -10,8 +10,14 @@ import Pagination from '../components/Pagination'
 import { useToast } from '../components/ToastProvider'
 import { IconKey, IconMail, IconRefresh, IconSearch, IconTrash } from '../components/icons'
 
-type SearchField = 'all' | 'subject' | 'from' | 'to' | 'body'
 type DeleteTarget = { accountId: string; message: InboxMessage }
+
+function HighlightMatch({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'))
+  return <>{parts.map((part, index) => index % 2 === 1 ? <mark className="mail-search-highlight" key={index}>{part}</mark> : part)}</>
+}
 
 function formatDate(raw: string): string {
   const date = new Date(raw)
@@ -19,15 +25,11 @@ function formatDate(raw: string): string {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date)
 }
 
-function inboxQuery(accountID: string, alias: string, search: string, field: SearchField, page: number, pageSize: number): string {
-  const params = new URLSearchParams({ account_id: accountID, scope: 'hme_aliases', page: String(page), page_size: String(pageSize), field })
+function inboxQuery(accountID: string, alias: string, search: string, page: number, pageSize: number): string {
+  const params = new URLSearchParams({ account_id: accountID, scope: 'hme_aliases', page: String(page), page_size: String(pageSize), field: 'subject' })
   if (alias) params.set('alias', alias)
   if (search) params.set('q', search)
   return params.toString()
-}
-
-function searchField(raw: string | null): SearchField {
-  return raw === 'subject' || raw === 'from' || raw === 'to' || raw === 'body' ? raw : 'all'
 }
 
 function pageNumber(raw: string | null): number {
@@ -45,13 +47,12 @@ export default function InboxPage() {
   const [aliases, setAliases] = useState<Alias[]>([])
   const accountId = accounts.find((account) => account.id === searchParams.get('account_id'))?.id ?? accounts[0]?.id ?? ''
   const alias = searchParams.get('alias') ?? ''
-  const field = searchField(searchParams.get('field'))
   const appliedSearch = (searchParams.get('q') ?? '').trim()
   const page = pageNumber(searchParams.get('page'))
   const requestedPageSize = Number(searchParams.get('page_size'))
   const pageSize = [10, 20, 50].includes(requestedPageSize) ? requestedPageSize : 20
   const [search, setSearch] = useState(appliedSearch)
-  const query = inboxQuery(accountId, alias, appliedSearch, field, page, pageSize)
+  const query = inboxQuery(accountId, alias, appliedSearch, page, pageSize)
   const cached = accountId ? readResource<InboxResult>(resourceKeys.inbox(query)) : undefined
   const [snapshot, setSnapshot] = useState<{ query: string; data: InboxResult } | null>(cached ? { query, data: cached.data } : null)
   const result = snapshot?.query === query ? snapshot.data : cached?.data ?? null
@@ -149,6 +150,7 @@ export default function InboxPage() {
           next.set('account_id', target)
           next.delete('limit')
           next.delete('days')
+          next.delete('field')
           paramsRef.current = next
           setSearchParams(next, { replace: true })
         }
@@ -224,6 +226,7 @@ export default function InboxPage() {
     if (currentAccountRef.current) next.set('account_id', currentAccountRef.current)
     next.delete('limit')
     next.delete('days')
+    next.delete('field')
     if (resetPage) next.set('page', '1')
     for (const [key, value] of Object.entries(values)) {
       if (value) next.set(key, value)
@@ -290,13 +293,13 @@ export default function InboxPage() {
         <div className="toolbar-actions"><button onClick={refresh} disabled={loading && !error}><IconRefresh size={16} />刷新邮件</button></div>
       </div>
       <form className="inbox-search" onSubmit={(event) => { event.preventDefault(); submitSearch(search) }}>
-        <select aria-label="搜索字段" value={field} onChange={(event) => changeQuery({ field: event.target.value, q: search.trim() })}><option value="all">全部内容</option><option value="subject">主题</option><option value="from">发件人</option><option value="to">收件人</option><option value="body">正文</option></select>
-        <div className="search-input-wrap"><input type="search" aria-label="搜索邮件" maxLength={256} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索主题、邮箱或正文关键词" /><span className="search-input-icon" aria-hidden="true"><IconSearch size={16} /></span></div>
+        <div className="search-input-wrap"><input type="search" aria-label="搜索邮件" aria-describedby="inbox-search-help" maxLength={256} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索邮件主题关键词" /><span className="search-input-icon" aria-hidden="true"><IconSearch size={16} /></span></div>
         <button type="submit" className="primary"><IconSearch size={16} />搜索</button>
       </form>
+      <p className="hint inbox-search-help" id="inbox-search-help">仅搜索邮件主题，不匹配正文或发件人。</p>
       <AsyncState loading={loading && !error} error={error} empty={!result || result.messages.length === 0} emptyText={appliedSearch ? '没有找到匹配的邮件，试试其他关键词' : '暂无邮件'} onRetry={refresh}>
         {result && result.messages.length > 0 && <>
-          <div className="inbox-summary"><span>{appliedSearch ? `“${appliedSearch}” 的搜索结果` : '全部邮件'} · 共 {result.total} 封</span><span className={isImap ? 'badge badge-info' : 'badge badge-neutral'}>{isImap ? <IconKey size={12} /> : <IconMail size={12} />}{isImap ? '可阅读完整邮件' : 'Web API 摘要模式'}</span></div>
+          <div className="inbox-summary"><span>{appliedSearch ? `“${appliedSearch}” 的主题搜索结果` : '全部邮件'} · 共 {result.total} 封</span><span className={isImap ? 'badge badge-info' : 'badge badge-neutral'}>{isImap ? <IconKey size={12} /> : <IconMail size={12} />}{isImap ? '可阅读完整邮件' : 'Web API 摘要模式'}</span></div>
           {!isImap && <div className="alert-info inbox-mode-notice">当前仅提供邮件摘要；配置 App 专用密码后可阅读正文和删除。</div>}
           <div className="mail-workspace">
             <div className="mail-list" aria-label="邮件列表">
@@ -309,9 +312,8 @@ export default function InboxPage() {
                   aria-describedby={`inbox-recipient-${message.id}`}
                   onClick={() => void openMessage(message)}
                 >
-                  <strong className="mail-list-sender">{message.from || '（未知发件人）'}</strong>
                   <span className="mail-list-copy">
-                    <span className="mail-list-subject">{message.subject || '（无主题）'}</span>
+                    <span className="mail-list-subject"><HighlightMatch text={message.subject || '（无主题）'} query={appliedSearch} /></span>
                     <span className="mail-list-recipient" id={`inbox-recipient-${message.id}`}>
                       <IconMail size={14} />
                       <span className="mail-list-recipient-label">收件：</span>

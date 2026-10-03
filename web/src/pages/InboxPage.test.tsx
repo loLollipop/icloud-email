@@ -110,9 +110,11 @@ describe('InboxPage', () => {
     await waitFor(() => {
       const u = new URL(lastUrl)
       expect(u.searchParams.get('q')).toBe('旧邮件 & 状态')
-      expect(u.searchParams.get('field')).toBe('all')
+      expect(u.searchParams.get('field')).toBe('subject')
     })
     expect(screen.queryByLabelText(/加载范围|时间范围/)).toBeNull()
+    expect(screen.queryByLabelText('搜索字段')).not.toBeInTheDocument()
+    expect(screen.getByText(/仅搜索邮件主题/)).toBeInTheDocument()
   })
 
   it.each([
@@ -139,6 +141,50 @@ describe('InboxPage', () => {
     expect(row).toHaveAccessibleDescription(`收件：${expected}`)
     expect(detailRequests).toBe(0)
     expect(screen.queryByRole('button', { name: '← 返回全部邮件' })).not.toBeInTheDocument()
+  })
+
+  it.each(['all', 'from', 'body'])('旧 field=%s 链接也只搜主题，不纳入正文或发件人命中', async (oldField) => {
+    const messages = [
+      { ...inboxResult.messages[0], subject: 'Your request was APPROVED', preview: 'Welcome' },
+      { ...inboxResult.messages[0], id: '2', subject: 'Set up your workspace', from: 'approved@example.com', preview: 'Your account has been approved' },
+    ]
+    let lastField = ''
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        lastField = params.get('field') ?? ''
+        const q = (params.get('q') ?? '').toLowerCase()
+        const matches = messages.filter((message) => (lastField === 'subject' ? message.subject : `${message.subject} ${message.from} ${message.preview}`).toLowerCase().includes(q))
+        return HttpResponse.json({ success: true, data: { ...inboxResult, count: matches.length, total: matches.length, messages: matches } })
+      }),
+    )
+    renderPage(`/inbox?field=${oldField}&q=approved`)
+    const row = await screen.findByRole('button', { name: 'Your request was APPROVED' })
+    expect(lastField).toBe('subject')
+    expect(row.querySelector('mark')).toHaveTextContent('APPROVED')
+    expect(screen.queryByRole('button', { name: 'Set up your workspace' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('搜索字段')).not.toBeInTheDocument()
+    expect(screen.queryByText('sender@example.com')).not.toBeInTheDocument()
+    expect(screen.queryByText('approved@example.com')).not.toBeInTheDocument()
+  })
+
+  it('主题关键词高亮按字面匹配，保留标题和详情点击', async () => {
+    const subject = 'Approved [a+b].<test>'
+    const message = { ...inboxResult.messages[0], subject }
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: { ...inboxResult, messages: [message] } })),
+      http.get('/api/inbox/:id', () => HttpResponse.json({ success: true, data: { ...fullMessage, subject } })),
+    )
+    renderPage('/inbox?q=' + encodeURIComponent('[a+b].<test>'))
+    const row = await screen.findByRole('button', { name: subject })
+    expect(row.querySelector('mark')).toHaveTextContent('[a+b].<test>')
+    expect(row.querySelector('test')).toBeNull()
+    expect(within(row).getByText('alpha@icloud.com')).toBeInTheDocument()
+    await userEvent.click(row)
+    expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
+    expect(screen.getByText('sender@example.com')).toBeInTheDocument()
   })
 
   it('从 URL 的 alias 参数初始化筛选,支持别名页直达收件箱', async () => {
@@ -190,12 +236,11 @@ describe('InboxPage', () => {
     expect(screen.getByText('Web API 摘要模式')).toBeInTheDocument()
   })
 
-  it('向服务器翻页并直接搜索当前页外的邮箱邮件', async () => {
+  it('向服务器翻页并直接搜索当前页外的主题邮件', async () => {
     const messages = Array.from({ length: 120 }, (_, index) => ({
       ...inboxResult.messages[0],
       id: String(index + 1),
-      from: index === 119 ? 'special@example.com' : `sender-${index + 1}@example.com`,
-      subject: `主题 ${index + 1}`,
+      subject: index === 119 ? '主题 120 approved' : `主题 ${index + 1}`,
       preview: `摘要 ${index + 1}`,
     }))
     server.use(
@@ -205,7 +250,8 @@ describe('InboxPage', () => {
         const page = Number(params.get('page'))
         const pageSize = Number(params.get('page_size'))
         const q = params.get('q') ?? ''
-        const matches = q ? messages.filter((message) => message.from.includes(q)) : messages
+        expect(params.get('field')).toBe('subject')
+        const matches = q ? messages.filter((message) => message.subject.includes(q)) : messages
         return HttpResponse.json({ success: true, data: { ...inboxResult, count: Math.min(pageSize, matches.length), total: matches.length, page, page_size: pageSize, messages: matches.slice((page - 1) * pageSize, page * pageSize) } })
       }),
     )
@@ -217,9 +263,8 @@ describe('InboxPage', () => {
     expect(await screen.findByRole('button', { name: '主题 21' })).toBeInTheDocument()
 
     const user = userEvent.setup()
-    await user.selectOptions(screen.getByLabelText('搜索字段'), 'from')
-    await user.type(screen.getByLabelText('搜索邮件'), 'special@example.com')
-    expect(await screen.findByRole('button', { name: '主题 120' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText('搜索邮件'), 'approved')
+    expect(await screen.findByRole('button', { name: '主题 120 approved' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '主题 21' })).not.toBeInTheDocument()
     expect(screen.getByText('第 1-1 项，共 1 项')).toBeInTheDocument()
   })
@@ -332,12 +377,12 @@ describe('InboxPage', () => {
     const user = userEvent.setup()
     await user.type(screen.getByLabelText('搜索邮件'), '第二请求')
     await user.click(screen.getByRole('button', { name: '搜索' }))
-    await screen.findByText('第二请求主题')
+    await screen.findByRole('button', { name: '第二请求主题' })
     // 第一次请求此时才返回
     release?.()
     // 旧数据不得覆盖新数据
     await new Promise((r) => setTimeout(r, 100))
-    expect(screen.getByText('第二请求主题')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '第二请求主题' })).toBeInTheDocument()
     expect(screen.queryByText('旧主题')).toBeNull()
   })
 

@@ -118,6 +118,126 @@ func TestParseRFC822EmptyAndMalformed(t *testing.T) {
 	}
 }
 
+func TestParseRFC822PreviewPreservesPartialMultipartBody(t *testing.T) {
+	raw := "Content-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/plain; charset=utf-8\r\n\r\napproved " +
+		strings.Repeat("body ", searchPreviewBytes)
+	partial := raw[:searchPreviewBytes]
+
+	got, err := parseRFC822Preview(strings.NewReader(partial), true)
+	if err != nil {
+		t.Fatalf("parseRFC822Preview: %v", err)
+	}
+	if !got.truncated || !strings.HasPrefix(got.body, "approved body ") {
+		t.Fatalf("partial preview = %#v", got)
+	}
+	if _, err := parseRFC822(strings.NewReader(partial)); err == nil {
+		t.Fatal("strict parser accepted partial multipart")
+	}
+}
+
+func TestParseRFC822PreviewPreservesBodyBeforePartialAttachment(t *testing.T) {
+	raw := "Content-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/plain; charset=utf-8\r\n\r\napproved short body\r\n" +
+		"--x\r\nContent-Type: application/octet-stream\r\n" +
+		"Content-Disposition: attachment; filename=large.bin\r\n\r\n" +
+		strings.Repeat("attachment data must not leak ", searchPreviewBytes)
+	partial := raw[:searchPreviewBytes]
+
+	got, err := parseRFC822Preview(strings.NewReader(partial), true)
+	if err != nil {
+		t.Fatalf("parseRFC822Preview: %v", err)
+	}
+	if got.body != "approved short body" || !got.truncated {
+		t.Fatalf("partial preview = %#v", got)
+	}
+}
+
+func TestParseRFC822PreviewPreservesDecodedBase64Prefix(t *testing.T) {
+	content := []byte(strings.Repeat("approved block ", 200))
+	encoded := base64.StdEncoding.EncodeToString(content)
+	header := "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n"
+	partial := header + encoded[:101]
+
+	got, err := parseRFC822Preview(strings.NewReader(partial), true)
+	if err != nil {
+		t.Fatalf("parseRFC822Preview: %v", err)
+	}
+	if !got.truncated || !strings.HasPrefix(got.body, "approved block approved block") {
+		t.Fatalf("decoded partial preview = %#v", got)
+	}
+	if _, err := parseRFC822(strings.NewReader(partial)); err == nil {
+		t.Fatal("strict parser accepted a truncated base64 block")
+	}
+}
+
+func TestParseRFC822PreviewPreservesBodyBeforePartialChildHeader(t *testing.T) {
+	partial := "Content-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/plain; charset=utf-8\r\n\r\napproved first body\r\n" +
+		"--x\r\nContent-Type: text/plain\r\nX-Unfinished: value"
+
+	got, err := parseRFC822Preview(strings.NewReader(partial), true)
+	if err != nil {
+		t.Fatalf("parseRFC822Preview: %v", err)
+	}
+	if got.body != "approved first body" || !got.truncated {
+		t.Fatalf("partial preview = %#v", got)
+	}
+	if _, err := parseRFC822(strings.NewReader(partial)); err == nil {
+		t.Fatal("strict parser accepted a partial child header")
+	}
+}
+
+func TestParseRFC822PreviewDoesNotRelaxMalformedShortMessage(t *testing.T) {
+	raw := "Content-Type: multipart/mixed; boundary=missing\r\n\r\n--different\r\nbody"
+	if _, err := parseRFC822Preview(strings.NewReader(raw), false); err == nil {
+		t.Fatal("bounded preview parser accepted malformed message below fetch limit")
+	}
+}
+
+func TestParseRFC822PreviewKeepsSafetyChecks(t *testing.T) {
+	deep := "Content-Type: text/plain; charset=utf-8\r\n\r\ntoo deep\r\n"
+	for depth := 16; depth >= 1; depth-- {
+		boundary := fmt.Sprintf("depth-%d", depth)
+		deep = "Content-Type: multipart/mixed; boundary=" + boundary + "\r\n\r\n" +
+			"--" + boundary + "\r\n" + deep
+	}
+
+	var many strings.Builder
+	many.WriteString("Content-Type: multipart/mixed; boundary=many\r\n\r\n")
+	for i := 0; i < maxMIMENodes; i++ {
+		many.WriteString("--many\r\nContent-Type: application/octet-stream\r\n\r\nx\r\n")
+	}
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "depth", raw: deep, want: "depth exceeds"},
+		{name: "nodes", raw: many.String(), want: "node count exceeds"},
+		{
+			name: "child header",
+			raw: "Content-Type: multipart/mixed; boundary=x\r\n\r\n" +
+				"--x\r\nX-Oversized: " + strings.Repeat("a", maxMIMEHeaderSize) + "\r\n\r\n",
+			want: "header exceeds",
+		},
+		{
+			name: "boundary",
+			raw:  "Content-Type: multipart/mixed; boundary=\"bad boundary \"\r\n\r\n",
+			want: "invalid MIME multipart boundary",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseRFC822Preview(strings.NewReader(tt.raw), true)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseRFC822RejectsMalformedRootContentType(t *testing.T) {
 	raw := "Content-Type: text/plain; charset\r\n\r\nbody"
 

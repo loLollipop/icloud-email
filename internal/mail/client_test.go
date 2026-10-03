@@ -809,6 +809,105 @@ func TestSearchPageFetchesOrderedPreviewsInSingleBoundedCommand(t *testing.T) {
 	}
 }
 
+func TestSearchPageKeepsPreviewFromFetchLimitPartialMIME(t *testing.T) {
+	useIMAPTimeouts(t, time.Second, 3*time.Second)
+	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	done := make(chan error, 1)
+	go servePartialSearchPreview(ln, serverTLS, done)
+
+	c := newTestClient(t, ln, clientTLS)
+	if err := c.Connect(); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if _, err := c.cli.Select("INBOX", true); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	messages, err := c.fetchSearchPage([]uint32{42}, map[string]struct{}{"alias@icloud.com": {}})
+	c.forceClose()
+	_ = ln.Close()
+	if err != nil {
+		t.Fatalf("fetchSearchPage: %v", err)
+	}
+	if len(messages) != 1 || !strings.HasPrefix(messages[0].Preview, "approved workspace") {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if serverErr := <-done; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+}
+
+func servePartialSearchPreview(ln net.Listener, serverTLS *tls.Config, done chan<- error) {
+	raw, err := ln.Accept()
+	if err != nil {
+		done <- err
+		return
+	}
+	conn := tls.Server(raw, serverTLS)
+	defer conn.Close()
+	if err := conn.Handshake(); err != nil {
+		done <- err
+		return
+	}
+	reader := bufio.NewReader(conn)
+	read := func(want string) (string, error) {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil {
+			return "", readErr
+		}
+		if !strings.Contains(strings.ToUpper(line), strings.ToUpper(want)) {
+			return "", fmt.Errorf("received %q, want %q", line, want)
+		}
+		return line, nil
+	}
+	write := func(response string) error {
+		_, writeErr := conn.Write([]byte(response))
+		return writeErr
+	}
+
+	if err := write("* OK [CAPABILITY IMAP4rev1] ready\r\n"); err != nil {
+		done <- err
+		return
+	}
+	login, err := read("LOGIN")
+	if err != nil {
+		done <- err
+		return
+	}
+	if err := write(imapTag(login) + " OK LOGIN completed\r\n"); err != nil {
+		done <- err
+		return
+	}
+	selectCmd, err := read("INBOX")
+	if err != nil {
+		done <- err
+		return
+	}
+	if err := write("* 1 EXISTS\r\n" + imapTag(selectCmd) + " OK [READ-ONLY] completed\r\n"); err != nil {
+		done <- err
+		return
+	}
+	fetch, err := read("UID FETCH 42")
+	if err != nil {
+		done <- err
+		return
+	}
+	if !strings.Contains(fetch, "BODY.PEEK[]<0.32768>") {
+		done <- fmt.Errorf("unexpected preview fetch %q", fetch)
+		return
+	}
+	prefix := "From: sender@example.com\r\nTo: alias@icloud.com\r\nSubject: approved\r\n" +
+		"Content-Type: multipart/mixed; boundary=x\r\n\r\n" +
+		"--x\r\nContent-Type: text/plain; charset=utf-8\r\n\r\napproved workspace "
+	body := prefix + strings.Repeat("x", searchPreviewBytes-len(prefix))
+	envelope := "ENVELOPE (\"03-Oct-2025 02:00:00 +0000\" \"approved\" ((NIL NIL \"sender\" \"example.com\")) NIL NIL ((NIL NIL \"alias\" \"icloud.com\")) NIL NIL NIL NIL)"
+	response := fmt.Sprintf("* 1 FETCH (UID 42 %s INTERNALDATE \"03-Oct-2025 02:00:00 +0000\" BODY[]<0> {%d}\r\n%s)\r\n", envelope, len(body), body)
+	if err := write(response + imapTag(fetch) + " OK FETCH completed\r\n"); err != nil {
+		done <- err
+		return
+	}
+	done <- nil
+}
+
 func serveEmptySearch(ln net.Listener, serverTLS *tls.Config, done chan<- error) {
 	raw, err := ln.Accept()
 	if err != nil {

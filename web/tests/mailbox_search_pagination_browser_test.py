@@ -24,6 +24,10 @@ ALIASES = [{"email": f"alias{i:02d}@icloud.test", "anonymousId": f"anon{i}", "la
 MESSAGES = [{**MESSAGE, "id": str(i), "from": "notifications_from_a_very_long_sender_address@example.test", "to": "alias01@icloud.test", "subject": f"历史合同审批邮件 {i}", "date": "2025-01-01T10:00:00Z", "preview": f"合同正文关键词 status {i}"} for i in range(1, 126)]
 MESSAGES[0]["to"] = "long-recipient-" + "x" * 64 + "@icloud.test, alias02@icloud.test"
 MESSAGES[1]["to"] = "alias02@icloud.test"
+MESSAGES[2]["subject"] = "You've been APPROVED for nonprofit pricing"
+MESSAGES[3]["subject"] = "Set up your workspace"
+MESSAGES[3]["from"] = "approved@example.test"
+MESSAGES[3]["preview"] = "Your account has been approved, but this is not the email subject."
 REQUESTS: list[dict[str, list[str]]] = []
 DETAIL_REQUESTS: list[str] = []
 
@@ -42,6 +46,7 @@ def mock_api(route: Route) -> None:
         REQUESTS.append(params)
         assert "limit" not in params and "days" not in params, params
         assert params["scope"] == ["hme_aliases"], params
+        assert params["field"] == ["subject"], params
         q = params.get("q", [""])[0]
         field = params.get("field", ["all"])[0]
         def matches(message):
@@ -104,6 +109,8 @@ def main() -> None:
                     page.wait_for_load_state("networkidle")
                     assert_layout(page, label, width)
                     if path.startswith("inbox"):
+                        expect(page.locator(".mail-list-sender")).to_have_count(0)
+                        expect(page.get_by_label("搜索字段")).to_have_count(0)
                         for message in MESSAGES[:2]:
                             row = page.get_by_role("button", name=message["subject"], exact=True)
                             address = row.locator(".mail-list-recipient-address")
@@ -121,8 +128,14 @@ def main() -> None:
                     assert_layout(page, label, width)
 
             page.set_viewport_size({"width": 1440, "height": 1000})
-            page.goto(f"{base}/inbox?account_id=acc_1")
+            page.goto(f"{base}/inbox?account_id=acc_1&field=all&q=approved")
             page.wait_for_load_state("networkidle")
+            approved_row = page.get_by_role("button", name="You've been APPROVED for nonprofit pricing", exact=True)
+            expect(approved_row).to_be_visible()
+            expect(approved_row.locator("mark")).to_have_text("APPROVED")
+            expect(page.get_by_role("button", name="Set up your workspace", exact=True)).to_have_count(0)
+            expect(page.get_by_label("搜索字段")).to_have_count(0)
+            assert REQUESTS[-1]["field"] == ["subject"]
             search = page.get_by_role("searchbox", name="搜索邮件")
             search.fill("历史合同审批邮件 125")
             expect(page.get_by_role("button", name="历史合同审批邮件 125", exact=True)).to_be_visible()
@@ -137,11 +150,11 @@ def main() -> None:
             search.fill("合同")
             search.press("Enter")
             nav = page.get_by_role("navigation", name="邮件列表分页", exact=True)
-            expect(nav.get_by_text("第 1-20 项，共 125 项")).to_be_visible()
+            expect(nav.get_by_text("第 1-20 项，共 123 项")).to_be_visible()
             nav.get_by_role("button", name="下一页", exact=True).click()
-            expect(page.get_by_role("button", name="历史合同审批邮件 21", exact=True)).to_be_visible()
-            page.get_by_role("button", name="历史合同审批邮件 21", exact=True).click()
-            expect(page.get_by_text("完整历史邮件正文 21", exact=True)).to_be_visible()
+            expect(page.get_by_role("button", name="历史合同审批邮件 23", exact=True)).to_be_visible()
+            page.get_by_role("button", name="历史合同审批邮件 23", exact=True).click()
+            expect(page.get_by_text("完整历史邮件正文 23", exact=True)).to_be_visible()
             page.get_by_role("button", name="← 返回全部邮件").click()
             expect(nav.get_by_role("button", name="第 2 页", exact=True)).to_have_attribute("aria-current", "page")
             page.screenshot(path=str(screenshots / "icloud-inbox-search-desktop.png"), full_page=True)

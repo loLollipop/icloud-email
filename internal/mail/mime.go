@@ -3,6 +3,7 @@ package mail
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -27,15 +28,28 @@ type parsedMessage struct {
 }
 
 type mimeParser struct {
-	result parsedMessage
-	plain  string
-	nodes  int
+	result       parsedMessage
+	plain        string
+	nodes        int
+	allowPartial bool
 }
 
 // parseRFC822 decodes a complete RFC 822 message. MIME containers are walked
 // explicitly so depth, total node count, and attachment inheritance can be
 // enforced before a subtree is expanded.
 func parseRFC822(r io.Reader) (parsedMessage, error) {
+	return parseRFC822Message(r, false)
+}
+
+// parseRFC822Preview decodes a bounded RFC 822 preview. When allowPartial is
+// true, an EOF after the complete root header preserves content decoded before
+// the fetch limit was reached. Structural and resource-limit errors remain
+// fatal.
+func parseRFC822Preview(r io.Reader, allowPartial bool) (parsedMessage, error) {
+	return parseRFC822Message(r, allowPartial)
+}
+
+func parseRFC822Message(r io.Reader, allowPartial bool) (parsedMessage, error) {
 	entity, err := message.ReadWithOptions(r, &message.ReadOptions{MaxHeaderBytes: maxMIMEHeaderSize})
 	if err != nil && !message.IsUnknownCharset(err) {
 		return parsedMessage{}, err
@@ -45,7 +59,8 @@ func parseRFC822(r io.Reader) (parsedMessage, error) {
 	}
 
 	parser := mimeParser{
-		result: parsedMessage{contentType: entity.Header.Get("Content-Type")},
+		result:       parsedMessage{contentType: entity.Header.Get("Content-Type"), truncated: allowPartial},
+		allowPartial: allowPartial,
 	}
 	if err := parser.visit(entity, 1, false); err != nil {
 		return parsedMessage{}, err
@@ -106,6 +121,10 @@ func (p *mimeParser) visit(entity *message.Entity, depth int, parentAttachment b
 			if nextErr == io.EOF {
 				return nil
 			}
+			if p.allowPartial && isPartialMIMEEOF(nextErr) {
+				p.result.truncated = true
+				return nil
+			}
 			if nextErr != nil && !message.IsUnknownCharset(nextErr) {
 				return nextErr
 			}
@@ -133,7 +152,8 @@ func (p *mimeParser) visit(entity *message.Entity, depth int, parentAttachment b
 		limit = maxHTMLBodySize
 	}
 	data, readErr := io.ReadAll(io.LimitReader(entity.Body, limit+1))
-	if readErr != nil {
+	partialRead := p.allowPartial && isPartialMIMEEOF(readErr)
+	if readErr != nil && !partialRead {
 		return readErr
 	}
 	wasTruncated := int64(len(data)) > limit
@@ -146,8 +166,25 @@ func (p *mimeParser) visit(entity *message.Entity, depth int, parentAttachment b
 	} else {
 		p.result.htmlBody = string(data)
 	}
-	p.result.truncated = p.result.truncated || wasTruncated
+	p.result.truncated = p.result.truncated || wasTruncated || partialRead
 	return nil
+}
+
+func isPartialMIMEEOF(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	// go-message v0.18.2 formats the underlying EOF with %v, so it cannot be
+	// matched with errors.Is. Match only the two exact legacy forms.
+	switch err.Error() {
+	case "multipart: NextPart: EOF", "multipart: NextPart: unexpected EOF":
+		return true
+	default:
+		return false
+	}
 }
 
 // validateMIMEBoundary applies the RFC 2046 boundary grammar to the decoded
@@ -228,6 +265,9 @@ func (r *multipartHeaderLimitReader) readChunk() error {
 		readErr = nil
 	}
 	if len(chunk) == 0 {
+		if readErr == io.EOF && r.inHeader {
+			return io.ErrUnexpectedEOF
+		}
 		return readErr
 	}
 
@@ -261,6 +301,9 @@ func (r *multipartHeaderLimitReader) readChunk() error {
 		r.fragmentedLine = true
 	} else {
 		r.fragmentedLine = false
+	}
+	if readErr == io.EOF && r.inHeader {
+		readErr = io.ErrUnexpectedEOF
 	}
 	r.pending = append(r.pending[:0], chunk...)
 	r.pendingErr = readErr

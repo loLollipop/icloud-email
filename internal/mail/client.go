@@ -433,7 +433,9 @@ func (c *Client) fetchSearchPage(uids []uint32, recipients map[string]struct{}) 
 			return nil, ErrMessageOutsideHME
 		}
 		message := toMessage(raw)
-		if parsed, err := parseRFC822(raw.GetBody(section)); err == nil {
+		body := raw.GetBody(section)
+		allowPartial := body.Len() >= searchPreviewBytes
+		if parsed, err := parseRFC822Preview(body, allowPartial); err == nil {
 			message.Preview = truncateRunes(strings.TrimSpace(parsed.body), previewRuneLimit)
 		}
 		result = append(result, message)

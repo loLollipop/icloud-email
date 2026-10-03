@@ -991,7 +991,7 @@ td .cell-secondary {
 .toolbar-actions button { white-space: nowrap; }
 .inbox-search {
   display: grid;
-  grid-template-columns: 135px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
@@ -1037,8 +1037,7 @@ td .cell-secondary {
 
 .mail-list-item:hover:not(:disabled) { border-color: var(--color-border); background: var(--color-bg-subtle); }
 .mail-list-item.is-selected { box-shadow: inset 3px 0 0 var(--color-primary); background: var(--color-primary-soft); }
-.mail-list-sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mail-list-copy { display: flex; min-width: 0; grid-column: 1 / -1; gap: var(--space-2); }
+.mail-list-copy { display: flex; min-width: 0; grid-column: 1; gap: var(--space-2); }
 .mail-list-date { flex-shrink: 0; color: var(--color-text-tertiary); font-size: var(--text-xs); }
 .mail-list-subject { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .mail-list-recipient { display: flex; align-items: flex-start; min-width: 0; gap: var(--space-1); margin-block: 2px; color: var(--color-text-secondary); font-size: var(--text-sm); }
@@ -1046,6 +1045,8 @@ td .cell-secondary {
 .mail-list-recipient-label { flex-shrink: 0; white-space: nowrap; }
 .mail-list-recipient-address { min-width: 0; overflow-wrap: anywhere; }
 .mail-list-preview { overflow: hidden; color: var(--color-text-secondary); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.mail-search-highlight { border-radius: 2px; color: inherit; background: var(--color-warning-soft); box-shadow: inset 0 -1px var(--color-warning); }
+.inbox-search-help { margin: 0 0 var(--space-3); }
 .mail-list .pagination { padding: var(--space-2) var(--space-3) var(--space-3); }
 .mail-list-copy { flex-direction: column; gap: 2px; }
 .inbox-search button { white-space: nowrap; }
@@ -1074,13 +1075,9 @@ td .cell-secondary {
 
 @media (min-width: 900px) {
   .mail-list-item {
-    grid-template-columns: minmax(180px, 0.7fr) minmax(0, 2fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     column-gap: var(--space-4);
-  }
-
-  .mail-list-copy {
-    grid-column: auto;
   }
 
 }
@@ -1093,6 +1090,8 @@ td .cell-secondary {
 }
 
 @media (max-width: 600px) {
+  .mail-list-copy { grid-column: 1 / -1; }
+  .mail-list-date { grid-column: 1 / -1; }
   .alias-toolbar,
   .inbox-toolbar,
   .inbox-search { grid-template-columns: 1fr; }
