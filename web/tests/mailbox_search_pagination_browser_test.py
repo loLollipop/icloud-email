@@ -22,7 +22,10 @@ from http.server import ThreadingHTTPServer
 ACCOUNTS = [{**ACCOUNT, "id": f"acc_{i}", "name": f"账号 {i}", "icloud_email": f"owner{i}@icloud.test"} for i in range(1, 24)]
 ALIASES = [{"email": f"alias{i:02d}@icloud.test", "anonymousId": f"anon{i}", "label": f"项目 {i}", "active": True, "createdAt": f"2026-09-{i:02d}T10:00:00Z"} for i in range(1, 28)]
 MESSAGES = [{**MESSAGE, "id": str(i), "from": "notifications_from_a_very_long_sender_address@example.test", "to": "alias01@icloud.test", "subject": f"历史合同审批邮件 {i}", "date": "2025-01-01T10:00:00Z", "preview": f"合同正文关键词 status {i}"} for i in range(1, 126)]
+MESSAGES[0]["to"] = "long-recipient-" + "x" * 64 + "@icloud.test, alias02@icloud.test"
+MESSAGES[1]["to"] = "alias02@icloud.test"
 REQUESTS: list[dict[str, list[str]]] = []
+DETAIL_REQUESTS: list[str] = []
 
 
 def mock_api(route: Route) -> None:
@@ -53,6 +56,7 @@ def mock_api(route: Route) -> None:
         data = {"account_id": "acc_1", "total": len(rows), "count": len(selected), "page": page, "page_size": size, "method": "imap", "messages": selected}
     elif path.startswith("/api/inbox/"):
         uid = path.rsplit("/", 1)[1]
+        DETAIL_REQUESTS.append(uid)
         message = next(message for message in MESSAGES if message["id"] == uid)
         data = {**message, "body": f"完整历史邮件正文 {uid}", "content_type": "text/plain"}
     else:
@@ -99,6 +103,14 @@ def main() -> None:
                     page.goto(f"{base}/{path}")
                     page.wait_for_load_state("networkidle")
                     assert_layout(page, label, width)
+                    if path.startswith("inbox"):
+                        for message in MESSAGES[:2]:
+                            row = page.get_by_role("button", name=message["subject"], exact=True)
+                            address = row.locator(".mail-list-recipient-address")
+                            expect(address).to_have_text(message["to"])
+                            expect(address).to_have_attribute("title", message["to"])
+                            assert address.evaluate("element => element.scrollWidth <= element.clientWidth + 1"), (message["id"], width)
+                        assert not DETAIL_REQUESTS, "Displaying recipients must not fetch individual messages"
                     nav = page.get_by_role("navigation", name=label, exact=True)
                     nav.get_by_role("button", name="下一页", exact=True).click()
                     expect(nav.get_by_role("button", name="第 2 页", exact=True)).to_have_attribute("aria-current", "page")
@@ -144,7 +156,7 @@ def main() -> None:
     finally:
         server.shutdown()
         server.server_close()
-    print("Chromium: all three pagination layouts pass at 1920/1440/900/390/320px; server search, real pages and detail return pass")
+    print("Chromium: pagination and full recipients pass at 1920/1440/900/390/320px; server search, real pages and detail return pass")
 
 
 if __name__ == "__main__":

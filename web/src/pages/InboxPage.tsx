@@ -300,7 +300,28 @@ export default function InboxPage() {
           {!isImap && <div className="alert-info inbox-mode-notice">当前仅提供邮件摘要；配置 App 专用密码后可阅读正文和删除。</div>}
           <div className="mail-workspace">
             <div className="mail-list" aria-label="邮件列表">
-              {result.messages.map((message) => <button type="button" key={message.id} className="mail-list-item" aria-label={message.subject || '（无主题）'} onClick={() => void openMessage(message)}><strong className="mail-list-sender">{message.from || '（未知发件人）'}</strong><span className="mail-list-copy"><span className="mail-list-subject">{message.subject || '（无主题）'}</span><span className="mail-list-preview">{message.preview || '—'}</span></span><time className="mail-list-date" dateTime={message.date}>{formatDate(message.date)}</time></button>)}
+              {result.messages.map((message) => (
+                <button
+                  type="button"
+                  key={message.id}
+                  className="mail-list-item"
+                  aria-label={message.subject || '（无主题）'}
+                  aria-describedby={`inbox-recipient-${message.id}`}
+                  onClick={() => void openMessage(message)}
+                >
+                  <strong className="mail-list-sender">{message.from || '（未知发件人）'}</strong>
+                  <span className="mail-list-copy">
+                    <span className="mail-list-subject">{message.subject || '（无主题）'}</span>
+                    <span className="mail-list-recipient" id={`inbox-recipient-${message.id}`}>
+                      <IconMail size={14} />
+                      <span className="mail-list-recipient-label">收件：</span>
+                      <span className="mail-list-recipient-address" title={message.to.trim() || undefined}>{message.to.trim() || '未提供收件邮箱'}</span>
+                    </span>
+                    <span className="mail-list-preview">{message.preview || '—'}</span>
+                  </span>
+                  <time className="mail-list-date" dateTime={message.date}>{formatDate(message.date)}</time>
+                </button>
+              ))}
               <Pagination page={result.page} pageSize={result.page_size} totalItems={result.total} onPageChange={(next) => changeQuery({ page: String(next) }, false)} onPageSizeChange={(size) => changeQuery({ page_size: String(size) })} pageSizeOptions={[10, 20, 50]} label="邮件列表分页" />
             </div>
           </div>

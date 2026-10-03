@@ -115,6 +115,32 @@ describe('InboxPage', () => {
     expect(screen.queryByLabelText(/加载范围|时间范围/)).toBeNull()
   })
 
+  it.each([
+    ['单个收件人', 'alpha@icloud.com', 'alpha@icloud.com'],
+    ['多个收件人', 'alpha@icloud.com, beta@icloud.com', 'alpha@icloud.com, beta@icloud.com'],
+    ['缺少收件人', '  ', '未提供收件邮箱'],
+  ])('列表直接显示%s，不请求详情或猜测收件地址', async (_name, to, expected) => {
+    let detailRequests = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: {
+        ...inboxResult,
+        messages: [{ ...inboxResult.messages[0], to }],
+      } })),
+      http.get('/api/inbox/:id', () => {
+        detailRequests++
+        return HttpResponse.json({ success: true, data: fullMessage })
+      }),
+    )
+    renderPage()
+    const row = await screen.findByRole('button', { name: '主题一' })
+    expect(within(row).getByText('收件：')).toBeInTheDocument()
+    expect(within(row).getByText(expected)).toBeInTheDocument()
+    expect(row).toHaveAccessibleDescription(`收件：${expected}`)
+    expect(detailRequests).toBe(0)
+    expect(screen.queryByRole('button', { name: '← 返回全部邮件' })).not.toBeInTheDocument()
+  })
+
   it('从 URL 的 alias 参数初始化筛选,支持别名页直达收件箱', async () => {
     const inboxUrls: string[] = []
     server.use(
