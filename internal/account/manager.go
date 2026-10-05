@@ -64,6 +64,9 @@ type Manager struct {
 	// cookieValidator is replaceable by same-package tests to deterministically
 	// exercise UpdateCookies without contacting iCloud.
 	cookieValidator cookieSessionValidator
+	// aliasLister is replaceable by same-package tests. Production always uses
+	// the authoritative HME list endpoint.
+	aliasLister func(*hme.Client) ([]hme.Alias, error)
 	// reloadSnapshotRead is a test synchronization hook invoked after Reload
 	// has fully parsed its disk snapshot and before it waits for lifecycle users.
 	reloadSnapshotRead func()
@@ -165,6 +168,7 @@ func NewManager(dataDir string) (*Manager, error) {
 		dataFile:        filepath.Join(dataDir, "accounts.json"),
 		imapPool:        mail.NewPool(),
 		cookieValidator: validateCookieSession,
+		aliasLister:     func(client *hme.Client) ([]hme.Alias, error) { return client.ListAliases() },
 		accountGuards:   make(map[string]*sync.RWMutex),
 	}
 	if err := m.load(); err != nil {
@@ -482,12 +486,7 @@ func (a *Account) validateCookies() {
 		}
 	}
 	if aliases, err := client.ListAliases(); err == nil {
-		a.AliasTotal = len(aliases)
-		for _, al := range aliases {
-			if al.Active {
-				a.AliasActive++
-			}
-		}
+		setAliasStats(a, aliases)
 	}
 	a.LastValidated = time.Now().Format(time.RFC3339)
 }
@@ -698,6 +697,57 @@ func (m *Manager) WithHMEClient(id string, verbose bool, fn func(*hme.Client) er
 		return &PersistenceError{Err: saveErr}
 	}
 	return operationErr
+}
+
+// ListAliases fetches the authoritative alias list and persists its enabled
+// and total counts together with any session cookies refreshed by the request.
+// Failed list requests never replace the last known-good counts.
+func (m *Manager) ListAliases(id string, verbose bool) ([]hme.Alias, error) {
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+
+	client, err := m.newHMEClientLocked(id, verbose)
+	if err != nil {
+		return nil, err
+	}
+	aliases, operationErr := m.listAliases(client)
+	if saveErr := m.saveHMESessionLocked(id, client.Cookies, aliases, operationErr == nil); saveErr != nil && operationErr == nil {
+		return nil, &PersistenceError{Err: saveErr}
+	}
+	return aliases, operationErr
+}
+
+// WithHMEClientAndAliasRefresh runs a mutating HME operation and, when it
+// succeeds, refreshes alias counts from the authoritative list before releasing
+// the account session lock. An auxiliary refresh failure preserves the previous
+// counts and does not turn an already-successful mutation into a failure.
+func (m *Manager) WithHMEClientAndAliasRefresh(id string, verbose bool, fn func(*hme.Client) error) error {
+	unlockAccount := m.lockAccount(id)
+	defer unlockAccount()
+
+	client, err := m.newHMEClientLocked(id, verbose)
+	if err != nil {
+		return err
+	}
+	operationErr := fn(client)
+	var aliases []hme.Alias
+	statsValid := false
+	if operationErr == nil {
+		var refreshErr error
+		aliases, refreshErr = m.listAliases(client)
+		statsValid = refreshErr == nil
+	}
+	if saveErr := m.saveHMESessionLocked(id, client.Cookies, aliases, statsValid); saveErr != nil && operationErr == nil {
+		return &PersistenceError{Err: saveErr}
+	}
+	return operationErr
+}
+
+func (m *Manager) listAliases(client *hme.Client) ([]hme.Alias, error) {
+	if m.aliasLister != nil {
+		return m.aliasLister(client)
+	}
+	return client.ListAliases()
 }
 
 // HMEClientWithPassword 为指定账号创建一个新的 HME 客户端,使用账号密码登录。
@@ -976,6 +1026,14 @@ func (m *Manager) SaveCookies(id string, cookies map[string]string) error {
 
 // saveCookiesLocked 在调用方持有账号生命周期独占锁时保存 Cookie。
 func (m *Manager) saveCookiesLocked(id string, cookies map[string]string) error {
+	return m.saveHMESessionLocked(id, cookies, nil, false)
+}
+
+// saveHMESessionLocked persists session cookies and, only for a successful
+// authoritative list response, its alias statistics. The caller holds the
+// per-account lifecycle lock, preventing stale writeback across credential
+// updates, reloads, or account deletion.
+func (m *Manager) saveHMESessionLocked(id string, cookies map[string]string, aliases []hme.Alias, statsValid bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	acc, ok := m.accounts[id]
@@ -983,7 +1041,20 @@ func (m *Manager) saveCookiesLocked(id string, cookies map[string]string) error 
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.Cookies = cloneCookies(cookies)
+	if statsValid {
+		setAliasStats(acc, aliases)
+	}
 	return m.save()
+}
+
+func setAliasStats(acc *Account, aliases []hme.Alias) {
+	acc.AliasTotal = len(aliases)
+	acc.AliasActive = 0
+	for _, alias := range aliases {
+		if alias.Active {
+			acc.AliasActive++
+		}
+	}
 }
 
 // UpdateCookies 更新指定账号的 Cookie,并自动校验会话有效性。

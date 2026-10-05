@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clearResourceCache,
+  expireResource,
   invalidateResource,
   invalidateResourcePrefix,
   loadResource,
@@ -31,6 +32,32 @@ describe('resourceCache', () => {
     expect(loader).toHaveBeenCalledTimes(1)
     resolve('done')
     await expect(first).resolves.toBe('done')
+  })
+
+  it('expires a resource without losing navigation data and refreshes on next load', async () => {
+    await loadResource('one', 60_000, async () => 'old')
+    expireResource('one')
+    expect(readResource<string>('one')).toEqual({ data: 'old', fresh: false })
+    const loader = vi.fn(async () => 'new')
+    await loadResource('one', 60_000, loader)
+    expect(loader).toHaveBeenCalledTimes(1)
+    expect(readResource<string>('one')).toEqual({ data: 'new', fresh: true })
+  })
+
+  it('does not let an expired flight write stale data back', async () => {
+    await loadResource('one', 60_000, async () => 'cached')
+    let resolveOld!: (value: string) => void
+    const old = loadResource('one', 60_000, () => new Promise<string>((done) => { resolveOld = done }), true)
+    expireResource('one')
+    await loadResource('one', 60_000, async () => 'new')
+    resolveOld('old')
+    await old
+    expect(readResource<string>('one')?.data).toBe('new')
+  })
+
+  it('expiring an unknown resource does not create navigation data', () => {
+    expireResource('missing')
+    expect(readResource('missing')).toBeUndefined()
   })
 
   it('supports exact, prefix and full invalidation', async () => {

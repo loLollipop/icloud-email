@@ -194,7 +194,7 @@ export default function AccountsPage() {
                 <th>名称</th>
                 <th>邮箱</th>
                 <th>状态</th>
-                <th>别名</th>
+                <th title="已启用别名 / 全部别名">别名（启用/总数）</th>
                 <th>凭据</th>
                 <th>最近验证</th>
                 <th>操作</th>

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary, Alias } from '../api/types'
 import {
+  expireResource,
   invalidateResource,
   invalidateResourcePrefix,
   loadResource,
@@ -154,6 +155,8 @@ export default function AliasesPage() {
       ),
     )
       .then((data) => {
+        // The backend updated counts even if this page has since unmounted.
+        expireResource(resourceKeys.accounts)
         if (cancelled) return
         setAliases(data.aliases ?? [])
         setError('')
@@ -248,6 +251,7 @@ export default function AliasesPage() {
         show(type === 'deactivate' ? '别名已停用' : '别名已激活')
       }
       setConfirm(null)
+      expireResource(resourceKeys.accounts)
       invalidateResource(resourceKeys.aliases(accountId))
       invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
       setAliasesLoading(true)
@@ -264,6 +268,7 @@ export default function AliasesPage() {
   function handleCreated(email: string) {
     setCreateOpen(false)
     showCopyable(email)
+    expireResource(resourceKeys.accounts)
     invalidateResource(resourceKeys.aliases(accountId))
     invalidateResourcePrefix(resourceKeys.inboxAccountPrefix(accountId))
     setAliasesLoading(true)

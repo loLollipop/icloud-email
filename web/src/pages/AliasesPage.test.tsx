@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import AliasesPage from './AliasesPage'
 import { server } from '../test/server'
 import { setCSRFToken } from '../api/client'
-import { loadResource, resourceKeys } from '../api/resourceCache'
+import { loadResource, readResource, resourceKeys } from '../api/resourceCache'
 import { ToastProvider } from '../components/ToastProvider'
 import type { AccountSummary, Alias } from '../api/types'
 
@@ -219,6 +219,39 @@ describe('AliasesPage', () => {
     expect(screen.getByText('alpha@icloud.com')).toBeInTheDocument()
     expect(screen.queryByRole('status', { name: /加载中/ })).toBeNull()
     await waitFor(() => expect(aliasRequests).toBe(1))
+  })
+
+  it('成功加载权威别名列表后使账号统计缓存失效', async () => {
+    await loadResource(resourceKeys.accounts, 60_000, async () => accounts)
+    server.use(
+      http.get('/api/aliases', () =>
+        HttpResponse.json({ success: true, data: { account_id: 'acc_1', count: 2, aliases } }),
+      ),
+    )
+
+    renderPage()
+    expect(await screen.findByText('alpha@icloud.com')).toBeInTheDocument()
+    expect(readResource(resourceKeys.accounts)).toEqual({ data: accounts, fresh: false })
+  })
+
+  it('离开页面后完成的别名请求仍会过期旧账号统计', async () => {
+    await loadResource(resourceKeys.accounts, 60_000, async () => accounts)
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    server.use(http.get('/api/aliases', async () => {
+      markStarted()
+      await gate
+      return HttpResponse.json({ success: true, data: { account_id: 'acc_1', count: 2, aliases } })
+    }))
+
+    const page = renderPage()
+    await started
+    page.unmount()
+    release()
+    await waitFor(() => expect(readResource(resourceKeys.accounts)?.fresh).toBe(false))
+    expect(readResource(resourceKeys.accounts)?.data).toEqual(accounts)
   })
 
   it('后台账号刷新不会覆盖用户刚选择的账号', async () => {

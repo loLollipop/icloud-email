@@ -84,6 +84,10 @@ describe('AccountsPage', () => {
     expect(screen.getByText('错误号')).toBeInTheDocument()
     expect(screen.getByText('active@icloud.com')).toBeInTheDocument()
     expect(screen.getByText('12 / 15')).toBeInTheDocument()
+    expect(screen.getByRole('columnheader', { name: '别名（启用/总数）' })).toHaveAttribute(
+      'title',
+      '已启用别名 / 全部别名',
+    )
     expect(screen.getAllByText(/已配置/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/未配置/).length).toBeGreaterThan(0)
     // 秘密字段不可见

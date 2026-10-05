@@ -78,6 +78,17 @@ export function invalidateResource(key: string): void {
   entries.delete(key)
 }
 
+/** Keep navigation data available, but require the next load to refresh it. */
+export function expireResource(key: string): void {
+  const current = entries.get(key)
+  if (current?.data === undefined) {
+    entries.delete(key)
+    return
+  }
+  // Replace the entry so an older in-flight request cannot make it fresh again.
+  entries.set(key, { data: current.data, expiresAt: 0 })
+}
+
 export function invalidateResourcePrefix(prefix: string): void {
   for (const key of entries.keys()) {
     if (key.startsWith(prefix)) entries.delete(key)

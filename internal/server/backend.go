@@ -222,7 +222,7 @@ func (b *managerBackend) RemoveAccount(id string) (bool, error) {
 // CreateAlias 创建 HME 别名。
 func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult, error) {
 	var result *hme.CreateResult
-	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+	err := b.mgr.WithHMEClientAndAliasRefresh(accountID, false, func(client *hme.Client) error {
 		var operationErr error
 		result, operationErr = client.CreateAlias(label, 5)
 		return operationErr
@@ -235,12 +235,7 @@ func (b *managerBackend) CreateAlias(accountID, label string) (*hme.CreateResult
 
 // ListAliases 列出账号的 HME 别名。
 func (b *managerBackend) ListAliases(accountID string) ([]hme.Alias, error) {
-	var aliases []hme.Alias
-	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
-		var operationErr error
-		aliases, operationErr = client.ListAliases()
-		return operationErr
-	})
+	aliases, err := b.mgr.ListAliases(accountID, false)
 	if err != nil {
 		return nil, mapHMEOperationErr("获取别名列表失败", err)
 	}
@@ -250,7 +245,7 @@ func (b *managerBackend) ListAliases(accountID string) ([]hme.Alias, error) {
 // SetAliasActive 停用或激活别名。
 func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bool) (bool, error) {
 	var success bool
-	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+	err := b.mgr.WithHMEClientAndAliasRefresh(accountID, false, func(client *hme.Client) error {
 		var operationErr error
 		if active {
 			success, operationErr = client.ReactivateHME(anonymousID)
@@ -273,7 +268,7 @@ func (b *managerBackend) SetAliasActive(accountID, anonymousID string, active bo
 
 // DeleteAlias 删除别名。
 func (b *managerBackend) DeleteAlias(accountID, anonymousID string) error {
-	err := b.mgr.WithHMEClient(accountID, false, func(client *hme.Client) error {
+	err := b.mgr.WithHMEClientAndAliasRefresh(accountID, false, func(client *hme.Client) error {
 		return client.Delete(anonymousID)
 	})
 	if err != nil {
