@@ -16,7 +16,7 @@ var securityHeaders = map[string]string{
 	// sandboxed mail srcdoc documents, which inherit this response policy.
 	// style-src-elem admits only same-origin CSS and MailHtmlFrame's exact
 	// component stylesheet; arbitrary inline <style> remains blocked.
-	"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; style-src-elem 'self' 'sha256-tz0SsdZR/Dt8LtcpYurICpqvmiePU32suqdbNReHtdI='; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+	"Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; style-src-elem 'self' 'sha256-eKr+7RSpsPrZqhQZ1gTR40o8Ir1CG8gkheULySs/9+A='; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 	"X-Content-Type-Options":  "nosniff",
 	"Referrer-Policy":         "no-referrer",
 	"Permissions-Policy":      "camera=(), microphone=(), geolocation=()",

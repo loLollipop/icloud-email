@@ -7,6 +7,7 @@ the literal CSP declared by the Go middleware and mocks only the JSON API.
 from __future__ import annotations
 
 import json
+import os
 import re
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -124,7 +125,7 @@ def main() -> None:
     remote_responses: list[str] = []
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"))
             page = browser.new_page()
             diagnostics: list[str] = []
             page.on("console", lambda message: diagnostics.append(f"console {message.type}: {message.text}"))
@@ -185,12 +186,15 @@ def main() -> None:
             assert "style.invalid/inline" in frame.locator("#inline-url-probe").evaluate(
                 "element => getComputedStyle(element).backgroundImage"
             )
-            assert frame.locator("body").evaluate("element => getComputedStyle(element).margin") == "16px"
+            assert frame.locator("body").evaluate("element => getComputedStyle(element).paddingTop") == "24px"
             assert frame.locator("script, form, button, img").count() == 0
             assert frame.locator("body").evaluate("() => window.__mailScriptRan === true") is False
             page.wait_for_timeout(250)
-            assert remote_requests == ["https://style.invalid/inline"]
-            assert remote_failures == [("https://style.invalid/inline", "csp")]
+            # Chrome versions differ on whether a CSP-blocked fetch emits a
+            # network event. Both must explicitly reject it before any response.
+            assert any('https://style.invalid/inline' in item and 'Content Security Policy' in item and 'blocked' in item for item in diagnostics), diagnostics
+            assert remote_requests in ([], ["https://style.invalid/inline"]), remote_requests
+            assert remote_failures in ([], [("https://style.invalid/inline", "csp")]), remote_failures
             assert remote_responses == []
             browser.close()
     finally:

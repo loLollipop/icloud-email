@@ -103,7 +103,7 @@ describe('InboxPage', () => {
     expect(url.searchParams.has('limit')).toBe(false)
     expect(url.searchParams.has('days')).toBe(false)
     expect(screen.getByRole('option', { name: '全部 iCloud 隐私别名' })).toBeInTheDocument()
-    expect(screen.getByText(/仅展示当前账号所有 iCloud 隐私别名/)).toBeInTheDocument()
+    expect(screen.getByText(/所有隐藏邮箱的来信/)).toBeInTheDocument()
     const user = userEvent.setup()
     await user.type(screen.getByLabelText('搜索邮件'), '旧邮件 & 状态')
     await user.click(screen.getByRole('button', { name: '搜索' }))
@@ -114,7 +114,7 @@ describe('InboxPage', () => {
     })
     expect(screen.queryByLabelText(/加载范围|时间范围/)).toBeNull()
     expect(screen.queryByLabelText('搜索字段')).not.toBeInTheDocument()
-    expect(screen.getByText(/仅搜索邮件主题/)).toBeInTheDocument()
+    expect(screen.getByText(/仅搜索主题/)).toBeInTheDocument()
   })
 
   it.each([
@@ -184,7 +184,7 @@ describe('InboxPage', () => {
     expect(within(row).getByText('alpha@icloud.com')).toBeInTheDocument()
     await userEvent.click(row)
     expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
-    expect(screen.getByText('sender@example.com')).toBeInTheDocument()
+    expect(screen.getAllByText('sender@example.com')[0]).toBeInTheDocument()
   })
 
   it('从 URL 的 alias 参数初始化筛选,支持别名页直达收件箱', async () => {
@@ -218,7 +218,7 @@ describe('InboxPage', () => {
     await waitFor(() => {
       expect(inboxUrls.some((url) => new URL(url).searchParams.get('alias') === 'alpha@icloud.com')).toBe(true)
     })
-    expect(screen.getByLabelText(/别名/)).toHaveValue('alpha@icloud.com')
+    expect(screen.getByLabelText('收件邮箱')).toHaveValue('alpha@icloud.com')
   })
 
   it('展示 method=imap 或 web_api', async () => {
@@ -233,7 +233,7 @@ describe('InboxPage', () => {
     )
     renderPage()
     await screen.findByText('主题一')
-    expect(screen.getByText('Web API 摘要模式')).toBeInTheDocument()
+    expect(screen.getByText(/当前仅提供邮件摘要/)).toBeInTheDocument()
   })
 
   it('向服务器翻页并直接搜索当前页外的主题邮件', async () => {
@@ -642,7 +642,7 @@ describe('InboxPage', () => {
       ),
     )
     renderPage()
-    expect(await screen.findByText('—')).toBeInTheDocument()
+    expect(await screen.findByText('打开查看邮件')).toBeInTheDocument()
   })
 
   it('纯文本详情使用 pre fallback', async () => {
@@ -725,6 +725,70 @@ describe('InboxPage', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(screen.getByLabelText('邮件列表')).toBeInTheDocument()
     expect(screen.queryByText('旧正文')).toBeNull()
+  })
+
+  it('详情失败可以原地重试，不丢失当前邮件', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => ++calls === 1
+        ? HttpResponse.json({ success: false, message: '读取暂时失败' }, { status: 503 })
+        : HttpResponse.json({ success: true, data: fullMessage })),
+    )
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: '主题一' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('读取暂时失败')
+    await userEvent.click(screen.getByRole('button', { name: '重新读取' }))
+    expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
+    expect(calls).toBe(2)
+  })
+
+  it('不可用账号的邮件链接不会回退读取或删除另一账号的同 UID 邮件', async () => {
+    let details = 0
+    await loadResource(resourceKeys.accounts, -1, async () => accounts)
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+      http.get('/api/inbox/:id', () => { details++; return HttpResponse.json({ success: true, data: fullMessage }) }),
+    )
+    renderPage('/inbox?account_id=removed&message=1')
+    expect(await screen.findByText('邮件所属账户不可用，已返回收件箱')).toBeInTheDocument()
+    await screen.findByRole('button', { name: '主题一' })
+    expect(screen.queryByRole('article', { name: '邮件阅读区' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '删除邮件' })).toBeNull()
+    expect(details).toBe(0)
+  })
+
+  it('缓存缺少链接账号时等待账号校验，并仅请求链接指定账号的正文', async () => {
+    const secondAccount = { ...accounts[0], id: 'acc_2', name: '备用号' }
+    let release: (() => void) | undefined
+    const details: string[] = []
+    await loadResource(resourceKeys.accounts, -1, async () => accounts)
+    server.use(
+      http.get('/api/accounts', () => new Promise<Response>((resolve) => { release = () => resolve(HttpResponse.json({ success: true, data: [...accounts, secondAccount] })) })),
+      http.get('/api/inbox', ({ request }) => HttpResponse.json({ success: true, data: { ...inboxResult, account_id: new URL(request.url).searchParams.get('account_id') } })),
+      http.get('/api/inbox/:id', ({ request }) => { details.push(new URL(request.url).searchParams.get('account_id') ?? ''); return HttpResponse.json({ success: true, data: fullMessage }) }),
+    )
+    renderPage('/inbox?account_id=acc_2&message=1')
+    await waitFor(() => expect(release).toBeDefined())
+    expect(details).toEqual([])
+    release?.()
+    expect(await screen.findByText('Plain detail body')).toBeInTheDocument()
+    expect(details).toEqual(['acc_2'])
+  })
+
+  it('初次账号加载失败后重试能重新获取账号', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/accounts', () => ++calls === 1 ? HttpResponse.json({ success: false, message: '账号加载失败' }, { status: 503 }) : HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/inbox', () => HttpResponse.json({ success: true, data: inboxResult })),
+    )
+    renderPage()
+    expect(await screen.findByRole('alert')).toHaveTextContent('账号加载失败')
+    await userEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByRole('button', { name: '主题一' })).toBeInTheDocument()
+    expect(calls).toBe(2)
   })
 
   it('从详情返回保留搜索和分页状态', async () => {

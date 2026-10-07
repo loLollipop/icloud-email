@@ -7,6 +7,7 @@ JSON responses are mocked; layout assertions exercise actual Chromium CSS.
 from __future__ import annotations
 
 import json
+import os
 import sys
 sys.dont_write_bytecode = True
 from pathlib import Path
@@ -97,7 +98,7 @@ def main() -> None:
     screenshots = Path("D:/DevCache/Temp")
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            browser = playwright.chromium.launch(headless=True, executable_path=os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE"))
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             failures = []
             page.on("pageerror", lambda error: failures.append(str(error)))

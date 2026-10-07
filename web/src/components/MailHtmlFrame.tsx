@@ -17,10 +17,10 @@ const forbiddenTags = [
   'area',
 ]
 
-const frameStyles = 'html{color-scheme:light}body{margin:16px;color:#202124;background:#fff;font:14px/1.55 system-ui,sans-serif;overflow-wrap:anywhere}a{color:#0b57d0}'
+const frameStyles = 'html{color-scheme:light;overflow-wrap:anywhere}body{box-sizing:border-box;margin:0 auto;padding:24px clamp(16px,4vw,48px);max-width:1000px;color:#202124;background:#fff;font:15px/1.7 -apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif;overflow-wrap:anywhere}img{max-width:100%!important;height:auto!important}table{max-width:100%!important;min-width:0!important;table-layout:fixed}td,th,div{min-width:0!important;max-width:100%!important;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#0b57d0}@media(max-width:600px){body{padding:18px 14px}table{width:100%!important;min-width:0!important;table-layout:fixed!important}td,th{min-width:0!important;overflow-wrap:anywhere}div{max-width:100%!important;min-width:0!important}}'
 // SHA-256 of frameStyles. The production response CSP repeats this hash so
 // srcdoc can use the component stylesheet without enabling arbitrary <style>.
-const frameStyleHash = "'sha256-tz0SsdZR/Dt8LtcpYurICpqvmiePU32suqdbNReHtdI='"
+const frameStyleHash = "'sha256-eKr+7RSpsPrZqhQZ1gTR40o8Ir1CG8gkheULySs/9+A='"
 
 const csp = [
   "default-src 'none'",

@@ -21,7 +21,7 @@ func TestSecurityHeadersAllowOnlyRequiredInlineStyles(t *testing.T) {
 	for _, directive := range []string{
 		"style-src 'self'",
 		"style-src-attr 'unsafe-inline'",
-		"style-src-elem 'self' 'sha256-tz0SsdZR/Dt8LtcpYurICpqvmiePU32suqdbNReHtdI='",
+		"style-src-elem 'self' 'sha256-eKr+7RSpsPrZqhQZ1gTR40o8Ir1CG8gkheULySs/9+A='",
 		"script-src 'self'",
 		"connect-src 'self'",
 	} {

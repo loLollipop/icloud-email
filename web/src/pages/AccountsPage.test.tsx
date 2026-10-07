@@ -68,6 +68,11 @@ function renderPage() {
   )
 }
 
+async function openSettings() {
+  const summary = screen.getAllByText('连接设置')[0]
+  if (!summary.closest('details')?.open) await userEvent.click(summary)
+}
+
 describe('AccountsPage', () => {
   beforeEach(() => {
     setCSRFToken('csrf-test')
@@ -84,10 +89,9 @@ describe('AccountsPage', () => {
     expect(screen.getByText('错误号')).toBeInTheDocument()
     expect(screen.getByText('active@icloud.com')).toBeInTheDocument()
     expect(screen.getByText('12 / 15')).toBeInTheDocument()
-    expect(screen.getByRole('columnheader', { name: '别名（启用/总数）' })).toHaveAttribute(
-      'title',
-      '已启用别名 / 全部别名',
-    )
+    expect(screen.getByText('12 / 15')).toHaveAttribute('title', '已启用别名 / 全部别名')
+    expect(within(screen.getByRole('article', { name: '活跃号' })).getByText('验证通过')).toBeInTheDocument()
+    expect(screen.getAllByRole('list', { name: '凭据配置情况（仅表示已填写）' })).toHaveLength(3)
     expect(screen.getAllByText(/已配置/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/未配置/).length).toBeGreaterThan(0)
     // 秘密字段不可见
@@ -208,6 +212,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
     const textarea = screen.getByLabelText('Cookie') as HTMLTextAreaElement
     await user.type(textarea, 'a=1; b=2')
@@ -234,6 +239,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
     await user.type(screen.getByLabelText('Cookie'), 'session=new')
     await user.click(screen.getByRole('button', { name: /保存/ }))
@@ -263,6 +269,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /iCloud 登录/ })[0])
     await user.type(screen.getByLabelText(/密码/), 'p@ssw0rd')
     let dialog = screen.getByRole('dialog')
@@ -288,8 +295,9 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置 App 密码/ })[0])
-    await user.type(screen.getByLabelText(/邮箱/), 'app@icloud.com')
+    await user.type(within(screen.getByRole('dialog')).getByLabelText(/邮箱/), 'app@icloud.com')
     await user.type(screen.getByLabelText('App 专用密码'), 'xxxx-xxxx-xxxx-xxxx')
     await user.click(screen.getByRole('button', { name: /保存/ }))
     await waitFor(() => expect(pwdBody).toContain('app@icloud.com'))
@@ -310,6 +318,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置代理/ })[0])
     const input = screen.getByLabelText(/代理地址/) as HTMLInputElement
     expect(input.value).toBe('')
@@ -319,6 +328,7 @@ describe('AccountsPage', () => {
     await waitFor(() => expect(input.value).toBe(''))
     // 关闭后重新打开:仍为空(从不回显)
     await user.click(screen.getByRole('button', { name: /取消/ }))
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置代理/ })[0])
     expect((screen.getByLabelText(/代理地址/) as HTMLInputElement).value).toBe('')
   })
@@ -335,6 +345,7 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /删除/ })[0])
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     // 名称不匹配时按钮禁用
@@ -369,6 +380,7 @@ describe('AccountsPage', () => {
     renderPage()
     await waitFor(() => expect(getCalls).toBe(1))
     const user = userEvent.setup()
+    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /删除/ })[0])
     await user.type(screen.getByLabelText(/输入账号名称/), '活跃号')
     await user.click(screen.getByRole('button', { name: /确认删除/ }))
@@ -388,4 +400,41 @@ describe('AccountsPage', () => {
       expect(screen.queryByText('旧响应账号')).not.toBeInTheDocument()
     })
   })
+  it('本地名称和邮箱搜索、状态筛选共同决定分页范围并重置页码', async () => {
+    const manyAccounts = Array.from({ length: 12 }, (_, index) => ({
+      ...accounts[index === 11 ? 1 : 0], id: `acc_${index}`, name: `账号 ${index + 1}`,
+      icloud_email: `user-${index + 1}@icloud.com`,
+    }))
+    server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: manyAccounts })))
+    renderPage()
+    await screen.findByText('账号 1')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await user.type(screen.getByRole('searchbox', { name: '搜索账号' }), 'USER-12')
+    expect(screen.getByText('账号 12')).toBeInTheDocument()
+    expect(screen.getByText('第 1-1 项，共 1 项')).toBeInTheDocument()
+    await user.clear(screen.getByRole('searchbox', { name: '搜索账号' }))
+    await user.selectOptions(screen.getByRole('combobox', { name: '账号状态' }), 'pending')
+    expect(screen.getByText('账号 12')).toBeInTheDocument()
+    expect(screen.queryByText('账号 1')).not.toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: '账号状态' }), 'active')
+    await user.type(screen.getByRole('searchbox', { name: '搜索账号' }), '账号 12')
+    expect(screen.getByText('没有匹配的账号')).toBeInTheDocument()
+  })
+
+  it('次要连接操作按账号折叠，展开后全部可达且名称确认删除保持有效', async () => {
+    server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })))
+    renderPage()
+    const card = await screen.findByRole('article', { name: '活跃号' })
+    const details = within(card).getByText('连接设置').closest('details')
+    expect(details).not.toHaveAttribute('open')
+    expect(within(card).getByRole('link', { name: '收件箱' })).toHaveAttribute('href', '/inbox?account_id=acc_active')
+    await userEvent.click(within(card).getByText('连接设置'))
+    expect(details).toHaveAttribute('open')
+    for (const name of ['更新 Cookie', 'iCloud 登录', '设置 App 密码', '接入收件邮箱', '设置代理', '删除']) {
+      expect(within(card).getByRole('button', { name })).toBeVisible()
+    }
+    expect(within(card).getByText('账号 ID：acc_active')).toBeInTheDocument()
+  })
+
 })

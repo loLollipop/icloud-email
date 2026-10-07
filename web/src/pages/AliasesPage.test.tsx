@@ -398,7 +398,7 @@ describe('AliasesPage', () => {
     renderPage()
     await screen.findByText('alpha@icloud.com')
     const user = userEvent.setup()
-    await user.click(screen.getAllByRole('button', { name: /停用/ })[0])
+    await user.click(screen.getAllByRole('button', { name: '停用' })[0])
     expect(screen.getByRole('dialog')).toHaveTextContent('alpha@icloud.com')
     await user.click(screen.getByRole('button', { name: /确认停用/ }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
@@ -465,9 +465,35 @@ describe('AliasesPage', () => {
     renderPage()
     await screen.findByText('alpha@icloud.com')
     const user = userEvent.setup()
-    await user.click(screen.getAllByRole('button', { name: /停用/ })[0])
+    await user.click(screen.getAllByRole('button', { name: '停用' })[0])
     await user.click(screen.getByRole('button', { name: /确认停用/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent('停用失败')
     expect(screen.getByText('alpha@icloud.com')).toBeInTheDocument()
   })
+  it('点击状态统计切换筛选，刷新重新请求当前账号', async () => {
+    let calls = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () => {
+        calls++
+        return HttpResponse.json({ success: true, data: { account_id: 'acc_1', count: 2, aliases } })
+      }),
+    )
+    renderPage()
+    await screen.findByText('alpha@icloud.com')
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '停用 1' }))
+    expect(screen.getByLabelText('状态')).toHaveValue('inactive')
+    expect(screen.getByText('beta@icloud.com')).toBeInTheDocument()
+    expect(screen.queryByText('alpha@icloud.com')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '刷新' }))
+    await waitFor(() => expect(calls).toBe(2))
+    expect(await screen.findByText('beta@icloud.com')).toBeInTheDocument()
+  })
+
+  it('没有账号时提供可导航的添加账号入口', async () => {
+    renderPage()
+    expect(await screen.findByRole('link', { name: /添加账号/ })).toHaveAttribute('href', '/accounts')
+  })
+
 })

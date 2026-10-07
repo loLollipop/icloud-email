@@ -25,6 +25,7 @@ import {
   IconCopy,
   IconInbox,
   IconPlus,
+  IconRefresh,
   IconSearch,
   IconTrash,
 } from '../components/icons'
@@ -278,7 +279,7 @@ export default function AliasesPage() {
   const loading = accountsLoading || (accountId !== '' && aliasesLoading)
 
   if (accounts.length === 0 && !accountsLoading && !error) {
-    return <p className="empty-state">暂无账号，请先到「账号」页面添加账号</p>
+    return <div className="empty-state"><p>暂无账号。添加 iCloud 账号后，即可管理隐藏邮箱。</p><Link to="/accounts">前往邮箱账户添加账号 →</Link></div>
   }
 
   const confirmTitle =
@@ -292,16 +293,16 @@ export default function AliasesPage() {
     confirm?.type === 'delete' ? '确认删除' : confirm?.type === 'deactivate' ? '确认停用' : '确认激活'
 
   return (
-    <section>
+    <section className="aliases-page" aria-label="隐藏邮箱管理">
       <div className="page-header">
-        <div className="page-title">
-          <h2>别名管理</h2>
-          <p>创建、停用、激活或删除 Hide My Email 别名</p>
-        </div>
+        <p className="page-description">用不同的邮箱地址，保留同一个收件目标。</p>
+        <div className="page-actions">
+          <button onClick={handleRetry} disabled={!accountId || loading}><IconRefresh size={15} />刷新</button>
           <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId}>
             <IconPlus size={16} />
             创建别名
           </button>
+        </div>
       </div>
 
       <div className="alias-toolbar card">
@@ -356,9 +357,9 @@ export default function AliasesPage() {
       </div>
 
       <div className="alias-stats" aria-label="别名统计">
-        <span>全部 <strong>{stats.total}</strong></span>
-        <span>启用 <strong>{stats.active}</strong></span>
-        <span>停用 <strong>{stats.inactive}</strong></span>
+        <button aria-pressed={filter === 'all'} onClick={() => { setFilter('all'); setPage(1) }}>全部 <strong>{stats.total}</strong></button>
+        <button aria-pressed={filter === 'active'} onClick={() => { setFilter('active'); setPage(1) }}>启用 <strong>{stats.active}</strong></button>
+        <button aria-pressed={filter === 'inactive'} onClick={() => { setFilter('inactive'); setPage(1) }}>停用 <strong>{stats.inactive}</strong></button>
       </div>
 
       <AsyncState
@@ -393,7 +394,7 @@ export default function AliasesPage() {
             <tbody>
               {visibleAliases.map((alias) => (
                 <tr key={alias.anonymousId}>
-                  <td>
+                  <td data-label="邮箱">
                     <button
                       type="button"
                       className="link-like"
@@ -404,39 +405,16 @@ export default function AliasesPage() {
                       {alias.email}
                     </button>
                   </td>
-                  <td>{alias.label || '—'}</td>
-                  <td>
+                  <td data-label="标签">{alias.label || '—'}</td>
+                  <td data-label="状态">
                     <span className={alias.active ? 'badge badge-active' : 'badge badge-neutral'}>
                       {alias.active ? <IconCheck size={12} /> : <IconClock size={12} />}
                       {alias.active ? '已启用' : '已停用'}
                     </span>
                   </td>
-                  <td>{formatDate(alias.createdAt)}</td>
-                  <td>
+                  <td data-label="创建时间">{formatDate(alias.createdAt)}</td>
+                  <td data-label="操作">
                     <div className="row-actions">
-                      {alias.active ? (
-                        <button
-                          disabled={busy}
-                          onClick={() => setConfirm({ type: 'deactivate', alias })}
-                        >
-                          停用
-                        </button>
-                      ) : (
-                        <button
-                          disabled={busy}
-                          onClick={() => setConfirm({ type: 'reactivate', alias })}
-                        >
-                          激活
-                        </button>
-                      )}
-                      <button
-                        className="danger"
-                        disabled={busy}
-                        onClick={() => setConfirm({ type: 'delete', alias })}
-                      >
-                        <IconTrash size={14} />
-                        删除
-                      </button>
                       <Link
                         to={`/inbox?account_id=${encodeURIComponent(accountId)}&alias=${encodeURIComponent(alias.email)}`}
                         title="查看此别名的收件箱"
@@ -444,6 +422,31 @@ export default function AliasesPage() {
                         <IconInbox size={14} />
                         收件箱
                       </Link>
+                      <span className="alias-secondary-actions">
+                        {alias.active ? (
+                          <button
+                            disabled={busy}
+                            onClick={() => setConfirm({ type: 'deactivate', alias })}
+                          >
+                            停用
+                          </button>
+                        ) : (
+                          <button
+                            disabled={busy}
+                            onClick={() => setConfirm({ type: 'reactivate', alias })}
+                          >
+                            激活
+                          </button>
+                        )}
+                        <button
+                          className="danger"
+                          disabled={busy}
+                          onClick={() => setConfirm({ type: 'delete', alias })}
+                        >
+                          <IconTrash size={14} />
+                          删除
+                        </button>
+                      </span>
                     </div>
                   </td>
                 </tr>

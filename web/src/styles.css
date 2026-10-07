@@ -1,5 +1,7 @@
+@import "./styles/workspace.css";
+
 /* ═══════════════════════════════════════════════════════════
-   iCloud HME 管理台设计系统
+   iCloud Mail 工作区设计系统
    风格：现代工具面板（Light-first，支持暗色）
    原则：清晰层级、克制动效(150-300ms)、可访问性优先
    ═══════════════════════════════════════════════════════════ */
@@ -22,14 +24,14 @@
   --color-warning-soft: #fdf6e3;
 
   /* 表面与文字 */
-  --color-bg: #ffffff;
-  --color-bg-subtle: #f5f6f8;
+  --color-bg: #f4f6f9;
+  --color-bg-subtle: #f0f3f7;
   --color-bg-raised: #ffffff;
-  --color-text: #1d2129;
-  --color-text-secondary: #5f6672;
-  --color-text-tertiary: #8a919c;
-  --color-border: #e3e6ea;
-  --color-border-strong: #cdd2d9;
+  --color-text: #243047;
+  --color-text-secondary: #65718a;
+  --color-text-tertiary: #7a8598;
+  --color-border: #e4e9f1;
+  --color-border-strong: #d4dce8;
 
   /* 阴影层级 */
   --shadow-xs: 0 1px 2px rgb(16 24 40 / 0.04);
@@ -79,7 +81,8 @@
 
 /* 暗色模式 */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --color-primary: #4d8dff;
     --color-primary-hover: #6ba1ff;
     --color-primary-soft: #1a2e4d;
@@ -109,6 +112,40 @@
     --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.55), 0 4px 8px rgb(0 0 0 / 0.4);
   }
 }
+
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --color-primary: #4d8dff;
+    --color-primary-hover: #6ba1ff;
+    --color-primary-soft: #1a2e4d;
+    --color-primary-soft-border: #2b4a78;
+    --gradient-brand: linear-gradient(135deg, #3b7bf0 0%, #6b9bff 100%);
+
+    --color-danger: #ff6b60;
+    --color-danger-hover: #ff857c;
+    --color-danger-soft: #4a2320;
+    --color-success: #4cc26a;
+    --color-success-soft: #1e3a28;
+    --color-warning: #e3b341;
+    --color-warning-soft: #40351a;
+
+    --color-bg: #111418;
+    --color-bg-subtle: #1a1e25;
+    --color-bg-raised: #1f242c;
+    --color-text: #e8eaed;
+    --color-text-secondary: #a8afba;
+    --color-text-tertiary: #6f7783;
+    --color-border: #2a303a;
+    --color-border-strong: #3a4250;
+
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-sm: 0 1px 3px rgb(0 0 0 / 0.4), 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 4px 12px rgb(0 0 0 / 0.45), 0 2px 4px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 12px 32px rgb(0 0 0 / 0.55), 0 4px 8px rgb(0 0 0 / 0.4);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+
 
 * {
   box-sizing: border-box;
@@ -150,112 +187,11 @@ body {
   left: 0;
 }
 
-/* ─── 应用壳 ─── */
-.app-shell {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-}
-
-.app-shell > header {
-  position: sticky;
-  top: 0;
-  z-index: var(--z-sticky);
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-3) var(--space-5);
-  border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  flex-wrap: wrap;
-}
-
-.app-shell .brand {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-lg);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--color-text);
-}
-
-.app-shell .brand .brand-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius);
-  background: var(--gradient-brand);
-  color: #fff;
-  flex-shrink: 0;
-  box-shadow: var(--shadow-sm);
-}
-
-.app-shell .brand .brand-sub {
-  font-size: var(--text-xs);
-  font-weight: 400;
-  color: var(--color-text-tertiary);
-  letter-spacing: 0.02em;
-}
-
-.app-shell > header > nav {
-  display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-}
-
-.app-shell > header > nav a {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 40px;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius);
-  color: var(--color-text-secondary);
-  text-decoration: none;
-  font-weight: 500;
-  transition: background var(--dur-fast) var(--ease-out),
-    color var(--dur-fast) var(--ease-out);
-}
-
-.app-shell > header > nav a svg {
-  width: 18px;
-  height: 18px;
-  flex-shrink: 0;
-}
-
-.app-shell > header > nav a:hover {
-  background: var(--color-bg-subtle);
-  color: var(--color-text);
-}
-
-.app-shell > header > nav a[aria-current='page'] {
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
-  font-weight: 600;
-}
-
-.app-shell .spacer {
-  flex: 1;
-}
-
-.app-shell main {
-  flex: 1;
-  padding: var(--space-6) var(--space-5);
-  width: 100%;
-  max-width: 1440px;
-  margin: 0 auto;
-}
-
 /* ─── 按钮 ─── */
 button {
   font: inherit;
-  min-height: 40px;
-  padding: var(--space-2) var(--space-4);
+  min-height: 36px;
+  padding: 7px 14px;
   border-radius: var(--radius);
   border: 1px solid var(--color-border-strong);
   background: var(--color-bg-raised);
@@ -264,7 +200,6 @@ button {
   transition: background var(--dur-fast) var(--ease-out),
     border-color var(--dur-fast) var(--ease-out),
     color var(--dur-fast) var(--ease-out),
-    transform var(--dur-fast) var(--ease-out),
     box-shadow var(--dur-fast) var(--ease-out);
 }
 
@@ -273,25 +208,20 @@ button:hover:not(:disabled) {
   border-color: var(--color-text-tertiary);
 }
 
-button:active:not(:disabled) {
-  transform: scale(0.97);
-}
-
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
 button.primary {
-  background: var(--gradient-brand);
+  background: var(--color-primary);
   border-color: transparent;
   color: #fff;
   box-shadow: var(--shadow-xs);
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--gradient-brand);
-  filter: brightness(1.06);
+  background: var(--color-primary-hover);
   box-shadow: var(--shadow-sm);
 }
 
@@ -510,10 +440,10 @@ td .cell-secondary {
 /* ─── 页面头部 ─── */
 .page-header {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-4);
   flex-wrap: wrap;
 }
 
@@ -776,71 +706,6 @@ td .cell-secondary {
   color: var(--color-primary);
 }
 
-/* ─── 登录页 ─── */
-.login-page {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-5);
-  padding: var(--space-5);
-  background:
-    radial-gradient(
-      600px circle at 20% 10%,
-      var(--color-primary-soft) 0%,
-      transparent 60%
-    ),
-    radial-gradient(
-      500px circle at 85% 90%,
-      color-mix(in srgb, var(--color-primary) 8%, transparent) 0%,
-      transparent 55%
-    ),
-    var(--color-bg);
-}
-
-.login-page .login-brand {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-3);
-  text-align: center;
-}
-
-.login-page .login-brand .logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: var(--radius-xl);
-  background: var(--gradient-brand);
-  color: #fff;
-  box-shadow: var(--shadow-md);
-}
-
-.login-page .login-brand h1 {
-  margin: 0;
-  font-size: var(--text-2xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-}
-
-.login-page .login-brand p {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.login-form {
-  width: 100%;
-  max-width: 380px;
-}
-
-.login-form .form-actions button {
-  width: 100%;
-}
-
 /* 数据行强调 */
 .cell-strong {
   font-weight: 600;
@@ -863,43 +728,6 @@ td .cell-secondary {
   padding: 4px;
   border: 0;
   background: transparent;
-}
-
-.mail-body {
-  max-height: 50vh;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg-subtle);
-}
-
-.dialog-mail-wide {
-  max-width: 900px;
-}
-
-.mail-truncated-notice {
-  margin: var(--space-3) 0;
-}
-
-.mail-html-container {
-  margin-top: var(--space-3);
-}
-
-.mail-privacy-notice {
-  margin: 0 0 var(--space-2);
-  color: var(--color-text-tertiary);
-  font-size: var(--text-xs);
-}
-
-.mail-html-frame {
-  display: block;
-  width: 100%;
-  min-height: 420px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: #fff;
 }
 
 /* 分页 */
@@ -947,166 +775,12 @@ td .cell-secondary {
 
 .pagination-ellipsis { padding: 0 var(--space-1); }
 
-/* 别名工具栏 */
-.alias-toolbar,
-.inbox-toolbar {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: var(--space-3);
-  padding: var(--space-4);
-  margin-bottom: var(--space-3);
-  box-shadow: none;
-}
-
-.alias-toolbar { grid-template-columns: minmax(160px, 0.8fr) minmax(260px, 1.8fr) minmax(140px, 0.7fr); }
-.toolbar-field label { margin-bottom: var(--space-1); }
-.toolbar-field-search { min-width: 0; }
-.search-input-wrap { position: relative; }
-.search-input-wrap input { padding-right: 36px; }
-.search-input-icon {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  display: flex;
-  color: var(--color-text-tertiary);
-  pointer-events: none;
-  transform: translateY(-50%);
-}
-
-.alias-stats {
-  display: flex;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.alias-stats strong { color: var(--color-text); }
-.alias-action-error { margin-top: var(--space-4); }
-.link-like svg { margin-right: 5px; vertical-align: -2px; }
-
-/* 收件箱工作台 */
-.inbox-toolbar { grid-template-columns: minmax(150px, 0.7fr) minmax(200px, 1.3fr) auto; }
-.toolbar-actions { display: flex; align-items: flex-end; }
-.toolbar-actions button { white-space: nowrap; }
-.inbox-search {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-
-.inbox-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-  color: var(--color-text-secondary);
-  font-size: var(--text-sm);
-}
-
-.inbox-mode-notice { margin-bottom: var(--space-3); }
-.mail-workspace {
-  min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg-raised);
-}
-
-.mail-list {
-  min-width: 0;
-  background: var(--color-bg-subtle);
-}
-
-.mail-list-item {
-  display: grid;
-  width: 100%;
-  min-height: 0;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 3px;
-  padding: var(--space-3) var(--space-4);
-  border: 0;
-  border-bottom: 1px solid var(--color-border);
-  border-radius: 0;
-  background: var(--color-bg-raised);
-  text-align: left;
-}
-
-.mail-list-item:hover:not(:disabled) { border-color: var(--color-border); background: var(--color-bg-subtle); }
-.mail-list-item.is-selected { box-shadow: inset 3px 0 0 var(--color-primary); background: var(--color-primary-soft); }
-.mail-list-copy { display: flex; min-width: 0; grid-column: 1; gap: var(--space-2); }
-.mail-list-date { flex-shrink: 0; color: var(--color-text-tertiary); font-size: var(--text-xs); }
-.mail-list-subject { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.mail-list-recipient { display: flex; align-items: flex-start; min-width: 0; gap: var(--space-1); margin-block: 2px; color: var(--color-text-secondary); font-size: var(--text-sm); }
-.mail-list-recipient svg { flex-shrink: 0; margin-top: 3px; }
-.mail-list-recipient-label { flex-shrink: 0; white-space: nowrap; }
-.mail-list-recipient-address { min-width: 0; overflow-wrap: anywhere; }
-.mail-list-preview { overflow: hidden; color: var(--color-text-secondary); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
-.mail-search-highlight { border-radius: 2px; color: inherit; background: var(--color-warning-soft); box-shadow: inset 0 -1px var(--color-warning); }
-.inbox-search-help { margin: 0 0 var(--space-3); }
-.mail-list .pagination { padding: var(--space-2) var(--space-3) var(--space-3); }
-.mail-list-copy { flex-direction: column; gap: 2px; }
-.inbox-search button { white-space: nowrap; }
-
-.mail-detail { width: 100%; min-width: 0; padding: var(--space-5); overflow-wrap: anywhere; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-raised); }
-.app-shell .mail-reader-header {
-  position: static;
-  z-index: auto;
-  display: block;
-  padding: 0 0 var(--space-4);
-  border-bottom: 1px solid var(--color-border);
-  margin-bottom: var(--space-4);
-  background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-.mail-reader-header h2 { margin: 0 0 var(--space-3); font-size: var(--text-xl); }
-.mail-reader-header dl { display: grid; gap: var(--space-1); margin: 0; font-size: var(--text-sm); }
-.mail-reader-header dl div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: var(--space-2); }
-.mail-reader-header dt { color: var(--color-text-tertiary); }
-.mail-reader-header dd { margin: 0; }
-.mail-reader-actions { display: flex; justify-content: flex-end; margin-top: var(--space-4); }
-.mail-reader-actions button { display: inline-flex; align-items: center; gap: var(--space-1); }
-.mail-summary-only { padding: var(--space-4); border-radius: var(--radius); background: var(--color-bg-subtle); }
-.mail-back-button { display: inline-flex; margin-bottom: var(--space-4); }
-
-@media (min-width: 900px) {
-  .mail-list-item {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    column-gap: var(--space-4);
-  }
-
-}
-
-@media (max-width: 899px) {
-  .alias-toolbar,
-  .inbox-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .toolbar-actions { grid-column: 1 / -1; }
-  .mail-detail { padding: var(--space-4); }
-}
-
 @media (max-width: 600px) {
-  .mail-list-copy { grid-column: 1 / -1; }
-  .mail-list-date { grid-column: 1 / -1; }
-  .alias-toolbar,
-  .inbox-toolbar,
-  .inbox-search { grid-template-columns: 1fr; }
   .pagination { align-items: flex-start; }
   .pagination-pages { width: 100%; justify-content: center; gap: var(--space-1); }
   .pagination-status { flex-basis: 100%; }
   .pagination-size { margin-left: auto; }
   .pagination-pages button { min-width: 32px; padding-inline: 6px; }
-  .app-shell > header { gap: var(--space-2); padding: var(--space-2) var(--space-3); }
-  .app-shell > header .brand { width: 100%; }
-  .app-shell > header .spacer { display: none; }
-  .app-shell main { padding: var(--space-5) var(--space-3); }
-  .mail-detail { padding: var(--space-3); }
-  .page-header { align-items: stretch; }
-  .page-header > button { width: 100%; }
 }
 
 /* 减少动效偏好 */
