@@ -69,8 +69,8 @@ function renderPage() {
 }
 
 async function openSettings() {
-  const summary = screen.getAllByText('连接设置')[0]
-  if (!summary.closest('details')?.open) await userEvent.click(summary)
+  const toggle = screen.getAllByRole('button', { name: /连接设置/ })[0]
+  if (toggle.getAttribute('aria-expanded') !== 'true') await userEvent.click(toggle)
 }
 
 describe('AccountsPage', () => {
@@ -89,8 +89,8 @@ describe('AccountsPage', () => {
     expect(screen.getByText('错误号')).toBeInTheDocument()
     expect(screen.getByText('active@icloud.com')).toBeInTheDocument()
     expect(screen.getByText('12 / 15')).toBeInTheDocument()
-    expect(screen.getByText('12 / 15')).toHaveAttribute('title', '已启用别名 / 全部别名')
-    expect(within(screen.getByRole('article', { name: '活跃号' })).getByText('验证通过')).toBeInTheDocument()
+    expect(screen.getByText('12 / 15')).toHaveAttribute('title', '已启用隐藏邮箱 / 全部隐藏邮箱')
+    expect(within(screen.getByRole('row', { name: '活跃号' })).getByText('验证通过')).toBeInTheDocument()
     expect(screen.getAllByRole('list', { name: '凭据配置情况（仅表示已填写）' })).toHaveLength(3)
     expect(screen.getAllByText(/已配置/).length).toBeGreaterThan(0)
     expect(screen.getAllByText(/未配置/).length).toBeGreaterThan(0)
@@ -425,16 +425,20 @@ describe('AccountsPage', () => {
   it('次要连接操作按账号折叠，展开后全部可达且名称确认删除保持有效', async () => {
     server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })))
     renderPage()
-    const card = await screen.findByRole('article', { name: '活跃号' })
-    const details = within(card).getByText('连接设置').closest('details')
-    expect(details).not.toHaveAttribute('open')
-    expect(within(card).getByRole('link', { name: '收件箱' })).toHaveAttribute('href', '/inbox?account_id=acc_active')
-    await userEvent.click(within(card).getByText('连接设置'))
-    expect(details).toHaveAttribute('open')
+    const row = await screen.findByRole('row', { name: '活跃号' })
+    const toggle = within(row).getByRole('button', { name: '连接设置 · 活跃号' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByRole('region', { name: '连接设置 · 活跃号' })).not.toBeInTheDocument()
+    expect(within(row).getByRole('link', { name: '收件箱' })).toHaveAttribute('href', '/inbox?account_id=acc_active')
+    await userEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const settings = screen.getByRole('region', { name: '连接设置 · 活跃号' })
     for (const name of ['更新 Cookie', 'iCloud 登录', '设置 App 密码', '接入收件邮箱', '设置代理', '删除']) {
-      expect(within(card).getByRole('button', { name })).toBeVisible()
+      expect(within(settings).getByRole('button', { name })).toBeVisible()
     }
-    expect(within(card).getByText('账号 ID：acc_active')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: '连接设置 · 等待号' }))
+    expect(screen.queryByRole('region', { name: '连接设置 · 活跃号' })).not.toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '连接设置 · 等待号' })).toBeVisible()
   })
 
 })

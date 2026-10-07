@@ -112,7 +112,9 @@ def main():
             page.get_by_role('button', name='← 返回全部邮件').click()
             page.screenshot(path=str(OUT / 'inbox-mobile.png'))
             for path in ['accounts', 'aliases', 'help']:
-                for width, height in [(1440, 900), (1366, 768), (390, 844), (320, 640)]:
+                sizes = [(1440, 900), (1366, 768), (390, 844), (320, 640)]
+                if path == 'accounts': sizes.extend([(1159, 768), (900, 768), (760, 768), (451, 844)])
+                for width, height in sizes:
                     page.set_viewport_size({'width': width, 'height': height})
                     page.goto(base + '/' + path)
                     page.wait_for_load_state('networkidle')
@@ -128,6 +130,29 @@ def main():
                         assert region.evaluate('e => e.scrollTop > 0')
                         assert pagination.bounding_box() == before
                         expect(pagination).to_be_in_viewport()
+                        if path == 'accounts':
+                            # List rows retain account-specific links and expand configuration inline.
+                            row = page.get_by_role('row', name='我的 iCloud', exact=True)
+                            toggle = row.get_by_role('button', name='连接设置 · 我的 iCloud')
+                            row.scroll_into_view_if_needed()
+                            toggle.focus()
+                            toggle.press('Enter')
+                            settings = page.get_by_role('region', name='连接设置 · 我的 iCloud')
+                            page.keyboard.press('Tab')
+                            expect(settings.get_by_role('button', name='更新 Cookie', exact=True)).to_be_focused()
+                            for _ in range(4): page.keyboard.press('Tab')
+                            proxy = settings.get_by_role('button', name='设置代理', exact=True)
+                            expect(proxy).to_be_focused()
+                            expect(proxy).to_be_in_viewport()
+                            page.keyboard.press('Enter')
+                            expect(page.get_by_role('dialog', name='设置代理')).to_be_visible()
+                            page.keyboard.press('Escape')
+                            expect(page.get_by_role('dialog', name='设置代理')).to_have_count(0)
+                            expect(proxy).to_be_focused()
+                            toggle.focus()
+                            toggle.press('Space')
+                            expect(settings).to_have_count(0)
+                            no_outer_scroll(page)
                         page.get_by_role('button', name='下一页', exact=True).click()
                         expect(pagination).to_contain_text('第 11-20 项')
                         page.get_by_role('button', name='上一页', exact=True).click()
@@ -137,6 +162,19 @@ def main():
                         # Destructive action labels must not match the button fill.
                         assert page.locator('.alias-secondary-actions button.danger').first.evaluate('e => getComputedStyle(e).color !== getComputedStyle(e).backgroundColor')
                     if width != 320: page.screenshot(path=str(OUT / f'{path}-{width}.png'))
+            # A single long account stays compact without overflowing any layout breakpoint.
+            def single_account_api(route):
+                account = {**ACCOUNT, 'name': '工作与订阅专用的 iCloud 邮箱账户', 'icloud_email': 'long.account.address.for.layout.regression@icloud.test'}
+                route.fulfill(content_type='application/json', body=json.dumps({'success': True, 'data': [account]}))
+            page.route('**/api/accounts', single_account_api)
+            for width, height in [(1440, 900), (900, 768), (760, 768), (451, 844), (390, 844)]:
+                page.set_viewport_size({'width': width, 'height': height})
+                page.goto(base + '/accounts')
+                expect(page.locator('.account-row')).to_have_count(1)
+                expect(page.locator('.account-identity')).to_contain_text('long.account.address.for.layout.regression@icloud.test')
+                no_outer_scroll(page)
+                page.screenshot(path=str(OUT / f'account-single-{width}.png'))
+            page.unroute('**/api/accounts', single_account_api)
             page.set_viewport_size({'width': 1440, 'height': 900})
             page.goto(base + '/inbox')
             page.locator('.workspace-theme-menu summary').click()

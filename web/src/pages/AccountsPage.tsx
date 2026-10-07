@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary } from '../api/types'
@@ -86,6 +86,7 @@ export default function AccountsPage() {
   const [pageSize, setPageSize] = useState(10)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [expandedAccount, setExpandedAccount] = useState<string | null>(null)
 
   const { show } = useToast()
 
@@ -176,7 +177,6 @@ export default function AccountsPage() {
   return (
     <section className="accounts-page management-page" aria-label="邮箱账户管理">
       <div className="page-header">
-        <p className="page-description">连接 iCloud 账号，管理隐藏邮箱与收件凭据。</p>
         <div className="page-actions">
           <button onClick={handleRetry} disabled={loading}><IconRefresh size={15} />刷新</button>
           <button className="primary" onClick={() => { setEditing(null); setFormOpen(true) }}>
@@ -204,59 +204,65 @@ export default function AccountsPage() {
       <div className="management-content">
         <AsyncState loading={loading} error={error} empty={filteredAccounts.length === 0}
           emptyText={accounts.length === 0 ? '暂无账号，点击“添加账号”开始' : '没有匹配的账号'} onRetry={handleRetry}>
-          <div className="account-grid management-scroll-region">
-            {visibleAccounts.map((acc) => (
-              <article className="account-card" key={acc.id} aria-label={acc.name}>
-                <div className="account-card-header">
-                  <span className="account-avatar" aria-hidden="true">{acc.name.slice(0, 1)}</span>
-                  <div className="account-identity">
-                    <div className="account-heading"><h2>{acc.name}</h2><StatusBadge status={acc.status} /></div>
-                    <p>{acc.icloud_email || acc.real_email || '未填写邮箱'}</p>
-                  </div>
-                </div>
-                {acc.status_message && <p className="account-status-message">{acc.status_message}</p>}
-                <div className="account-metadata">
-                  <div><span>隐藏邮箱 · 启用 / 全部</span><strong title="已启用别名 / 全部别名">{acc.alias_active} / {acc.alias_total}</strong></div>
-                  <div><span>最近验证</span><time dateTime={acc.last_validated || undefined}>{formatValidation(acc.last_validated)}</time></div>
-                </div>
-                <ul className="credential-tags" aria-label="凭据配置情况（仅表示已填写）">
-                  {[
-                    { name: 'Cookie', configured: acc.has_cookies },
-                    { name: 'App 密码', configured: acc.has_app_password },
-                    { name: '收件邮箱', configured: Boolean(acc.mailbox) },
-                    { name: '代理', configured: acc.has_proxy },
-                  ].map((credential) => (
-                    <li key={credential.name} className={credential.configured ? 'is-configured' : ''}
-                      title={`${credential.name}：${credential.configured ? '已配置' : '未配置'}（不代表当前连接状态）`}>
-                      <span className="credential-name">{credential.name}</span>
-                      <span className="credential-state">
-                        {credential.configured && <IconCheck size={12} />}
-                        {credential.configured ? '已配置' : '未配置'}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                <div className="account-primary-actions row-actions">
-                  <Link className="account-inbox-link" to={`/inbox?account_id=${encodeURIComponent(acc.id)}`}><IconMail size={14} />收件箱</Link>
-                  <Link to={`/aliases?account_id=${encodeURIComponent(acc.id)}`}><IconAliases size={14} />别名</Link>
-                  <button className="ghost" onClick={() => { setEditing(acc); setFormOpen(true) }}><IconEdit size={14} />编辑</button>
-                </div>
-                <details className="account-settings">
-                  <summary><IconSettings size={14} /><span>连接设置</span><span className="visually-hidden"> · {acc.name}</span><IconChevronDown className="account-settings-chevron" size={14} /></summary>
-                  <div className="account-settings-content">
-                    <div className="row-actions">
-                      <button onClick={() => setCookieFor(acc)}>更新 Cookie</button>
-                      <button onClick={() => setLoginFor(acc)}><IconKey size={14} />iCloud 登录</button>
-                      <button onClick={() => setAppPwdFor(acc)}>设置 App 密码</button>
-                      <button onClick={() => setMailboxFor(acc)}>接入收件邮箱</button>
-                      <button onClick={() => setProxyFor(acc)}>设置代理</button>
-                    </div>
-                    {acc.mailbox && <p className="hint">收件邮箱：{acc.mailbox.email}</p>}
-                    <div className="account-settings-bottom"><span className="hint">账号 ID：{acc.id}</span><button className="danger" onClick={() => setDeleteFor(acc)}><IconTrash size={14} />删除</button></div>
-                  </div>
-                </details>
-              </article>
-            ))}
+          <div className="account-list management-scroll-region">
+            <table className="account-table" aria-label="邮箱账户列表">
+              <colgroup><col className="account-col-identity" /><col className="account-col-status" /><col className="account-col-aliases" /><col className="account-col-credentials" /><col className="account-col-validation" /><col className="account-col-actions" /></colgroup>
+              <thead><tr><th scope="col">账户</th><th scope="col">状态</th><th scope="col">隐藏邮箱</th><th scope="col">连接配置</th><th scope="col">最近验证</th><th scope="col">操作</th></tr></thead>
+              <tbody>
+                {visibleAccounts.map((acc) => (
+                  <Fragment key={acc.id}>
+                    <tr className="account-row" aria-label={acc.name}>
+                      <td className="account-cell-identity">
+                        <div className="account-identity"><strong>{acc.name}</strong><span>{acc.icloud_email || acc.real_email || '未填写邮箱'}</span></div>
+                      </td>
+                      <td className="account-cell-status"><StatusBadge status={acc.status} />{acc.status_message && <p className="account-status-message">{acc.status_message}</p>}</td>
+                      <td className="account-cell-aliases"><span className="account-cell-label">隐藏邮箱</span><strong title="已启用隐藏邮箱 / 全部隐藏邮箱">{acc.alias_active} / {acc.alias_total}</strong></td>
+                      <td className="account-cell-credentials">
+                        <ul className="credential-tags" aria-label="凭据配置情况（仅表示已填写）">
+                          {[
+                            { name: 'Cookie', configured: acc.has_cookies },
+                            { name: 'App 密码', configured: acc.has_app_password },
+                            { name: '收件邮箱', configured: Boolean(acc.mailbox) },
+                            { name: '代理', configured: acc.has_proxy },
+                          ].map((credential) => (
+                            <li key={credential.name} className={credential.configured ? 'is-configured' : ''}
+                              title={`${credential.name}：${credential.configured ? '已配置' : '未配置'}（不代表当前连接状态）`}>
+                              {credential.configured ? <IconCheck size={12} /> : <span aria-hidden="true">−</span>}
+                              {credential.name}<span className="visually-hidden">：{credential.configured ? '已配置' : '未配置'}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </td>
+                      <td className="account-cell-validation"><span className="account-cell-label">最近验证</span><time dateTime={acc.last_validated || undefined}>{formatValidation(acc.last_validated)}</time></td>
+                      <td className="account-cell-actions">
+                        <div className="account-actions row-actions">
+                          <Link className="account-inbox-link" to={`/inbox?account_id=${encodeURIComponent(acc.id)}`}><IconMail size={14} />收件箱</Link>
+                          <Link to={`/aliases?account_id=${encodeURIComponent(acc.id)}`}><IconAliases size={14} />别名</Link>
+                          <button className="ghost" onClick={() => { setEditing(acc); setFormOpen(true) }}><IconEdit size={14} />编辑</button>
+                          <button className="account-settings-toggle ghost" aria-label={`连接设置 · ${acc.name}`} aria-expanded={expandedAccount === acc.id} aria-controls={expandedAccount === acc.id ? `account-settings-${acc.id}` : undefined}
+                            onClick={() => setExpandedAccount((current) => current === acc.id ? null : acc.id)}><IconSettings size={14} /><span>配置</span><IconChevronDown size={12} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                    {expandedAccount === acc.id && (
+                      <tr className="account-settings-row"><td colSpan={6}>
+                        <div className="account-settings-content" id={`account-settings-${acc.id}`} role="region" aria-label={`连接设置 · ${acc.name}`}>
+                          <div className="row-actions">
+                            <button onClick={() => setCookieFor(acc)}>更新 Cookie</button>
+                            <button onClick={() => setLoginFor(acc)}><IconKey size={14} />iCloud 登录</button>
+                            <button onClick={() => setAppPwdFor(acc)}>设置 App 密码</button>
+                            <button onClick={() => setMailboxFor(acc)}>接入收件邮箱</button>
+                            <button onClick={() => setProxyFor(acc)}>设置代理</button>
+                            <button className="danger" onClick={() => setDeleteFor(acc)}><IconTrash size={14} />删除</button>
+                          </div>
+                          {acc.mailbox && <p className="hint">收件邮箱：{acc.mailbox.email}</p>}
+                        </div>
+                      </td></tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
           </div>
           <Pagination page={currentPage} pageSize={pageSize} totalItems={filteredAccounts.length}
             onPageChange={setPage} onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }} label="账号列表分页" />

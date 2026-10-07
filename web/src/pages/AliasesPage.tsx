@@ -295,7 +295,6 @@ export default function AliasesPage() {
   return (
     <section className="aliases-page management-page" aria-label="隐藏邮箱管理">
       <div className="page-header">
-        <p className="page-description">用不同的邮箱地址，保留同一个收件目标。</p>
         <div className="page-actions">
           <button onClick={handleRetry} disabled={!accountId || loading}><IconRefresh size={15} />刷新</button>
           <button className="primary" onClick={() => setCreateOpen(true)} disabled={!accountId}>

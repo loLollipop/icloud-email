@@ -53,11 +53,11 @@ export default function InboxPage() {
         onPrevious={() => { const message = result?.messages[selectedIndex - 1]; if (message) inbox.openMessage(message) }}
         onNext={() => { const message = result?.messages[selectedIndex + 1]; if (message) inbox.openMessage(message) }}
         onRetry={inbox.retryDetail} onDelete={() => inbox.setDeleteFor({ accountId, message: detail ?? selected })} /> : <>
-        <div className="mail-page-heading"><div><h2>收件箱</h2><p>所有隐藏邮箱的来信，尽在此处。</p></div><button className="mail-refresh" onClick={inbox.refresh} disabled={loading && !error}><IconRefresh size={16} /><span>刷新邮件</span></button></div>
+        <div className="mail-page-heading"><h2>收件箱</h2><button className="mail-refresh" onClick={inbox.refresh} disabled={loading && !error}><IconRefresh size={16} /><span>刷新邮件</span></button></div>
         <div className="inbox-panel">
           <div className="inbox-commandbar">
             <form className="inbox-search" onSubmit={(event) => { event.preventDefault(); inbox.submitSearch(search) }}>
-              <div className="search-input-wrap"><span className="search-input-icon" aria-hidden="true"><IconSearch size={18} /></span><input type="search" aria-label="搜索邮件" aria-describedby="inbox-search-help" maxLength={256} value={search} onChange={(event) => inbox.setSearch(event.target.value)} placeholder="搜索邮件主题…" /></div>
+              <div className="search-input-wrap"><span className="search-input-icon" aria-hidden="true"><IconSearch size={18} /></span><input type="search" aria-label="搜索邮件" maxLength={256} value={search} onChange={(event) => inbox.setSearch(event.target.value)} placeholder="搜索邮件主题…" /></div>
               <button type="submit" className="primary">搜索</button>
             </form>
             <div className="inbox-filters">
@@ -66,7 +66,7 @@ export default function InboxPage() {
               <button className="icon-button ghost density-toggle" aria-label={density === 'comfortable' ? '切换为紧凑列表' : '切换为舒适列表'} title={density === 'comfortable' ? '切换为紧凑列表' : '切换为舒适列表'} aria-pressed={density === 'compact'} onClick={changeDensity}><IconList size={18} /></button>
             </div>
           </div>
-          <div className="inbox-summary"><span>{appliedSearch ? `“${appliedSearch}” 的主题搜索结果` : '全部邮件'}{result ? ` · 共 ${result.total} 封` : ''}{appliedSearch && <button className="icon-button ghost" aria-label="清除搜索" title="清除搜索" onClick={() => inbox.submitSearch('')}><IconClose size={14} /></button>}</span><span className="hint" id="inbox-search-help">仅搜索主题</span></div>
+          <div className="inbox-summary"><span>{appliedSearch ? `“${appliedSearch}” 的主题搜索结果` : '全部邮件'}{result ? ` · 共 ${result.total} 封` : ''}{appliedSearch && <button className="icon-button ghost" aria-label="清除搜索" title="清除搜索" onClick={() => inbox.submitSearch('')}><IconClose size={14} /></button>}</span></div>
           {!isImap && result && <div className="inbox-mode-notice">当前仅提供邮件摘要；配置 App 专用密码后可阅读正文和删除。<Link to="/accounts">去配置</Link></div>}
           <div className="mail-workspace">
             {!loading && !error && accounts.length === 0 ? <div className="mail-welcome"><span className="mail-welcome-icon"><IconInbox size={30} /></span><h3>连接你的第一个邮箱</h3><p>添加 iCloud 账户后，在这里集中阅读隐藏邮箱收到的邮件。</p><Link className="button-link primary" to="/accounts">添加邮箱账户</Link></div> : <AsyncState loading={loading && !error} error={error} empty={!result || result.messages.length === 0} emptyText={appliedSearch ? '没有找到匹配的邮件，试试其他关键词' : '暂无邮件'} onRetry={inbox.refresh}>

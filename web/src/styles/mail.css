@@ -3,7 +3,6 @@
 .inbox-page .icon-button { margin-left: 0; min-width: 30px; min-height: 30px; }
 .mail-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; }
 .mail-page-heading h2 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.7px; }
-.mail-page-heading p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
 .mail-refresh { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .inbox-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-bg-raised); box-shadow: var(--shadow-xs); }
 .inbox-commandbar { display: flex; flex-direction: column; gap: 14px; padding: 18px 22px 14px; flex-shrink: 0; }
@@ -22,7 +21,6 @@
 .inbox-page .density-toggle { flex-shrink: 0; margin-left: auto; }
 .inbox-summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 39px; padding: 5px 22px; border-block: 1px solid var(--color-border); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: 12px; flex-shrink: 0; }
 .inbox-summary > span:first-child { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
-.inbox-summary .hint { margin: 0; white-space: nowrap; font-size: 11px; }
 .inbox-mode-notice { padding: 8px 22px; background: var(--color-warning-soft); color: var(--color-warning); font-size: 12px; }
 .inbox-mode-notice a { margin-left: 8px; color: inherit; }
 .mail-workspace { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; }

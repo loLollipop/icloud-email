@@ -103,7 +103,6 @@ describe('InboxPage', () => {
     expect(url.searchParams.has('limit')).toBe(false)
     expect(url.searchParams.has('days')).toBe(false)
     expect(screen.getByRole('option', { name: '全部 iCloud 隐私别名' })).toBeInTheDocument()
-    expect(screen.getByText(/所有隐藏邮箱的来信/)).toBeInTheDocument()
     const user = userEvent.setup()
     await user.type(screen.getByLabelText('搜索邮件'), '旧邮件 & 状态')
     await user.click(screen.getByRole('button', { name: '搜索' }))
@@ -114,7 +113,6 @@ describe('InboxPage', () => {
     })
     expect(screen.queryByLabelText(/加载范围|时间范围/)).toBeNull()
     expect(screen.queryByLabelText('搜索字段')).not.toBeInTheDocument()
-    expect(screen.getByText(/仅搜索主题/)).toBeInTheDocument()
   })
 
   it.each([

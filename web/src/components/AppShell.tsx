@@ -48,7 +48,7 @@ export default function AppShell() {
       <aside className="workspace-sidebar" aria-label="工作区导航">
         <NavLink className="brand" to="/inbox" aria-label="iCloud Mail 首页">
           <span className="brand-logo"><IconCloud size={24} /></span>
-          <span>iCloud Mail<span className="brand-sub">邮件工作区</span></span>
+          <span>iCloud Mail</span>
         </NavLink>
         <nav className="workspace-nav" aria-label="主导航">
           {navigation.map(({ path, label, icon: Icon }) => (
@@ -68,7 +68,6 @@ export default function AppShell() {
       </aside>
       <header className="workspace-topbar">
         <div className="workspace-breadcrumb"><span>工作区</span><span aria-hidden="true">/</span><h1>{title}</h1></div>
-        <span className="workspace-topbar-note">iCloud 隐藏邮箱与邮件</span>
         <div className="workspace-utilities" aria-label="工作区工具">
           <NavLink className="workspace-icon-button" to="/help" aria-label="使用指南" title="使用指南"><IconHelp size={18} /></NavLink>
           <details className="workspace-theme-menu">

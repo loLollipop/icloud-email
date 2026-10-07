@@ -1,6 +1,8 @@
-# iCloud Hide My Email 本地管理工具
+# iCloud Mail
 
 [English](#english) | 中文
+
+本项目基于 [xiaozhou26/icloud-hme](https://github.com/xiaozhou26/icloud-hme) 二次开发，感谢原项目作者。本仓库为 [loLollipop/icloud-email](https://github.com/loLollipop/icloud-email)，主要改进邮件阅读、账户与别名管理，以及控制台界面。
 
 通过逆向 iCloud Web 接口和 IMAP 邮件协议，实现 Apple iCloud 隐藏邮箱别名的创建、列出和邮件收取功能。内置中文管理界面（React 单页应用，随二进制内嵌分发）。
 
@@ -21,7 +23,7 @@
 
 #### 方式一：下载二进制发布版（推荐）
 
-从 [GitHub Releases](https://github.com/loLollipop/icloud-mail/releases) 下载对应平台的二进制文件：
+从 [GitHub Releases](https://github.com/loLollipop/icloud-email/releases) 下载对应平台的二进制文件：
 
 | 平台 | 文件 |
 |---|---|
@@ -43,8 +45,8 @@ chmod +x icloud-hme_linux_amd64
 克隆本仓库，初始化仅容器用户可访问的数据目录，再创建 `.env`（至少设置 `ICLOUD_HME_ADMIN_PASSWORD`），然后启动服务：
 
 ```bash
-git clone https://github.com/loLollipop/icloud-mail.git
-cd icloud-mail
+git clone https://github.com/loLollipop/icloud-email.git
+cd icloud-email
 
 mkdir -p data
 sudo chown 10001:10001 data
@@ -64,8 +66,8 @@ docker compose up -d --build
 
 ```bash
 # 前置要求: Go 1.26+、Node.js 22.12+
-git clone https://github.com/loLollipop/icloud-mail.git
-cd icloud-mail
+git clone https://github.com/loLollipop/icloud-email.git
+cd icloud-email
 
 # 一键构建（安装前端依赖 → 前端测试 → 前端构建 → Go 测试 → 编译）
 ./build.sh
@@ -557,7 +559,7 @@ GOOS=windows GOARCH=amd64 go build -o icloud-hme.exe .
 git tag v0.2.0 && git push origin --tags
 ```
 
-Actions 会自动构建多平台二进制、Docker 镜像（`ghcr.io/lolollipop/icloud-mail`）并创建 Release。
+Actions 会自动构建多平台二进制、Docker 镜像（`ghcr.io/lolollipop/icloud-email`）并创建 Release。
 
 ### 代码规范
 
@@ -576,6 +578,8 @@ MIT License
 
 ## English
 
+This project is based on [xiaozhou26/icloud-hme](https://github.com/xiaozhou26/icloud-hme), with improvements to mail reading, account and alias management, and the dashboard UI. This fork is maintained at [loLollipop/icloud-email](https://github.com/loLollipop/icloud-email). Thanks to the original project author.
+
 A local management tool for Apple iCloud Hide My Email (HME) aliases, using the reverse-engineered iCloud Web API for alias management and IMAP for HME-scoped email reading. Ships with a built-in Chinese management UI (React SPA embedded in the single binary).
 
 ### Features
@@ -592,7 +596,7 @@ A local management tool for Apple iCloud Hide My Email (HME) aliases, using the 
 
 #### Option 1: Binary (GitHub Releases)
 
-Download the latest binary from [GitHub Releases](https://github.com/loLollipop/icloud-mail/releases):
+Download the latest binary from [GitHub Releases](https://github.com/loLollipop/icloud-email/releases):
 
 | Platform | File |
 |---|---|
@@ -614,8 +618,8 @@ chmod +x icloud-hme_linux_amd64
 Clone this repository, initialize a data directory accessible only to the container user, create `.env` (setting at least `ICLOUD_HME_ADMIN_PASSWORD`), and then start the service:
 
 ```bash
-git clone https://github.com/loLollipop/icloud-mail.git
-cd icloud-mail
+git clone https://github.com/loLollipop/icloud-email.git
+cd icloud-email
 
 mkdir -p data
 sudo chown 10001:10001 data
@@ -634,8 +638,8 @@ docker compose up -d --build
 #### Option 3: Build from source (Go 1.26+ and Node.js 22.12+)
 
 ```bash
-git clone https://github.com/loLollipop/icloud-mail.git
-cd icloud-mail
+git clone https://github.com/loLollipop/icloud-email.git
+cd icloud-email
 
 # One-shot build (frontend deps → frontend test → frontend build → Go test → binary)
 ./build.sh
