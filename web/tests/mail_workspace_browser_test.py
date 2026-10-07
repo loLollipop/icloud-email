@@ -119,6 +119,7 @@ def main():
                     if width != 320: page.screenshot(path=str(OUT / f'{path}-{width}.png'))
             page.set_viewport_size({'width': 1440, 'height': 900})
             page.goto(base + '/inbox')
+            page.locator('.workspace-theme-menu summary').click()
             page.locator('#workspace-theme').select_option('dark')
             expect(page.locator('.mail-list-item')).to_have_count(20)
             expect(page.get_by_role('button', name='刷新邮件')).to_be_enabled()

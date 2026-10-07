@@ -70,7 +70,7 @@ describe('AuthProvider + LoginPage', () => {
       ),
     )
     renderApp()
-    expect(await screen.findByRole('heading', { name: 'iCloud Mail' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '邮件工作区' })).toBeInTheDocument()
   })
 
   it('登录成功进入 /inbox', async () => {
@@ -93,9 +93,9 @@ describe('AuthProvider + LoginPage', () => {
     )
     renderApp()
     const user = userEvent.setup()
-    await screen.findByRole('heading', { name: 'iCloud Mail' })
+    await screen.findByRole('heading', { name: '邮件工作区' })
     await user.type(screen.getByLabelText(/管理员密码/), 'admin-pass-2026')
-    await user.click(screen.getByRole('button', { name: /登录/ }))
+    await user.click(screen.getByRole('button', { name: /进入工作区/ }))
     expect(await screen.findByTestId('protected')).toBeInTheDocument()
   })
 
@@ -116,9 +116,9 @@ describe('AuthProvider + LoginPage', () => {
     )
     renderApp()
     const user = userEvent.setup()
-    await screen.findByRole('heading', { name: 'iCloud Mail' })
+    await screen.findByRole('heading', { name: '邮件工作区' })
     await user.type(screen.getByLabelText(/管理员密码/), 'wrong-password')
-    await user.click(screen.getByRole('button', { name: /登录/ }))
+    await user.click(screen.getByRole('button', { name: /进入工作区/ }))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('管理员密码错误')
     expect(alert).not.toHaveTextContent('wrong-password')
@@ -172,7 +172,7 @@ describe('AuthProvider + LoginPage', () => {
     await screen.findByTestId('protected')
     await user.click(screen.getByRole('button', { name: /退出登录/ }))
     await waitFor(() =>
-      expect(screen.getByRole('heading', { name: 'iCloud Mail' })).toBeInTheDocument(),
+      expect(screen.getByRole('heading', { name: '邮件工作区' })).toBeInTheDocument(),
     )
   })
 })

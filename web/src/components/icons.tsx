@@ -255,3 +255,11 @@ export function IconGrid(props: IconProps) {
 export function IconList(props: IconProps) {
   return <svg {...base(props)}><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01" /></svg>
 }
+
+export function IconEye(props: IconProps) {
+  return <svg {...base(props)}><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>
+}
+
+export function IconEyeOff(props: IconProps) {
+  return <svg {...base(props)}><path d="m3 3 18 18M10.6 6.2A10.8 10.8 0 0 1 12 6c6 0 9.5 6 9.5 6a18 18 0 0 1-3.1 3.7M6.1 6.8C3.8 8.2 2.5 12 2.5 12s3.5 6 9.5 6c.6 0 1.2-.1 1.8-.2" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></svg>
+}
