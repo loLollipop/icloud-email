@@ -88,7 +88,7 @@ func (s *Server) Handler() http.Handler { return s.r }
 
 func (s *Server) register() {
 	api := s.r.Group("/api")
-	api.Use(apiCacheControlMiddleware())
+	api.Use(apiCacheControlMiddleware(), apiBodyLimitMiddleware())
 	{
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)

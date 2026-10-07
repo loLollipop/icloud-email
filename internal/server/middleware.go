@@ -2,12 +2,15 @@
 package server
 
 import (
+	"bytes"
+	"io"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
-// maxBodyBytes 是 JSON 请求体上限。
+// maxBodyBytes 是 API 请求体上限。
 const maxBodyBytes = 1 << 20 // 1 MiB
 
 // securityHeaders 是全局安全响应头。
@@ -38,6 +41,41 @@ func apiCacheControlMiddleware() gin.HandlerFunc {
 		c.Header("Cache-Control", "no-store")
 		c.Next()
 	}
+}
+
+// apiBodyLimitMiddleware 在任何 API handler 运行前检查完整请求体。
+// 多读一个字节以识别未知长度/分块请求，内存和读取量始终有界。
+func apiBodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > maxBodyBytes {
+			rejectOversizedBody(c)
+			return
+		}
+		if c.Request.Body != nil {
+			body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBodyBytes+1))
+			if len(body) > maxBodyBytes {
+				rejectOversizedBody(c)
+				return
+			}
+			if err != nil {
+				failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "请求体读取失败")
+				return
+			}
+			_ = c.Request.Body.Close()
+			c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		c.Next()
+	}
+}
+
+// Reject without draining an unfinished HTTP/1 body. The read deadline also
+// bounds net/http's post-handler cleanup; Gin exposes the underlying writer.
+func rejectOversizedBody(c *gin.Context) {
+	if c.Request.ProtoMajor == 1 {
+		c.Header("Connection", "close")
+	}
+	_ = http.NewResponseController(c.Writer).SetReadDeadline(time.Now())
+	failCode(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "请求体不能超过 1 MiB")
 }
 
 // csrfCheck 校验状态变更请求的 CSRF token。

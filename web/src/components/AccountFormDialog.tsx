@@ -53,6 +53,7 @@ export default function AccountFormDialog({
   }
 
   function handleClose() {
+    if (submitting) return
     reset()
     onClose()
   }
@@ -94,6 +95,7 @@ export default function AccountFormDialog({
     <Dialog
       title={editing ? '编辑账号' : '添加账号'}
       open={open}
+      busy={submitting}
       onClose={handleClose}
     >
       {error && (
@@ -158,7 +160,7 @@ export default function AccountFormDialog({
         </>
       )}
       <div className="form-actions">
-        <button onClick={handleClose}>取消</button>
+        <button onClick={handleClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '保存中…' : '保存'}
         </button>

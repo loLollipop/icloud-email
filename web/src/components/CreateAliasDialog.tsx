@@ -46,6 +46,7 @@ export default function CreateAliasDialog({
     <Dialog
       title="创建别名"
       open={open}
+      busy={submitting}
       onClose={() => {
         setLabel('')
         setError('')
@@ -69,7 +70,7 @@ export default function CreateAliasDialog({
         <p className="hint">标签最长 200 字符；创建后会自动生成新的隐私邮箱。</p>
       </div>
       <div className="form-actions">
-        <button onClick={onClose}>取消</button>
+        <button onClick={onClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '创建中…' : '创建'}
         </button>

@@ -6,17 +6,20 @@ interface DialogProps {
   onClose: () => void
   children: ReactNode
   className?: string
+  busy?: boolean
 }
 
 /** 可访问 Dialog:Escape 关闭、焦点圈定、关闭后回到触发按钮 */
-export default function Dialog({ title, open, onClose, children, className }: DialogProps) {
+export default function Dialog({ title, open, onClose, children, className, busy = false }: DialogProps) {
   const ref = useRef<HTMLDivElement>(null)
   const lastFocused = useRef<Element | null>(null)
   const onCloseRef = useRef(onClose)
+  const busyRef = useRef(busy)
 
   useEffect(() => {
     onCloseRef.current = onClose
-  }, [onClose])
+    busyRef.current = busy
+  }, [onClose, busy])
 
   useEffect(() => {
     if (!open) return
@@ -35,7 +38,7 @@ export default function Dialog({ title, open, onClose, children, className }: Di
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onCloseRef.current()
+        if (!busyRef.current) onCloseRef.current()
         return
       }
       if (e.key !== 'Tab') return
@@ -76,7 +79,7 @@ export default function Dialog({ title, open, onClose, children, className }: Di
       className="dialog-backdrop"
       role="presentation"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onCloseRef.current()
+        if (e.target === e.currentTarget && !busyRef.current) onCloseRef.current()
       }}
     >
       <div
@@ -85,6 +88,7 @@ export default function Dialog({ title, open, onClose, children, className }: Di
         className={['dialog', className].filter(Boolean).join(' ')}
         role="dialog"
         aria-modal="true"
+        aria-busy={busy}
         aria-label={title}
       >
         <h3>{title}</h3>

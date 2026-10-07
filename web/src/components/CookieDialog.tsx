@@ -44,6 +44,7 @@ export default function CookieDialog({ accountId, open, onClose, onSaved }: Cook
     <Dialog
       title="更新 Cookie"
       open={open}
+      busy={submitting}
       onClose={() => {
         setCookies('')
         setError('')
@@ -66,7 +67,7 @@ export default function CookieDialog({ accountId, open, onClose, onSaved }: Cook
         />
       </div>
       <div className="form-actions">
-        <button onClick={onClose}>取消</button>
+        <button onClick={onClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '保存中…' : '保存'}
         </button>

@@ -56,6 +56,7 @@ export default function ICloudLoginDialog({
     <Dialog
       title="iCloud 登录"
       open={open}
+      busy={submitting}
       onClose={() => {
         setPassword('')
         setOtp('')
@@ -99,7 +100,7 @@ export default function ICloudLoginDialog({
         </div>
       )}
       <div className="form-actions">
-        <button onClick={onClose}>取消</button>
+        <button onClick={onClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '登录中…' : otpRequired ? '验证' : '登录'}
         </button>

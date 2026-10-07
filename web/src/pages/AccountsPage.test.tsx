@@ -166,6 +166,97 @@ describe('AccountsPage', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
+  it.each(['添加', '编辑'])('%s账号提交期间阻止取消、Escape、遮罩，完成后新草稿独立', async (mode) => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => { finish = resolve })
+    let writes = 0
+    const handler = async () => {
+      writes++
+      await pending
+      return HttpResponse.json({ success: true, data: accounts[0] })
+    }
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.post('/api/accounts', handler),
+      http.patch('/api/accounts/:id', handler),
+    )
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    await user.click(mode === '添加'
+      ? screen.getByRole('button', { name: /添加账号/ })
+      : screen.getAllByRole('button', { name: /编辑/ })[0])
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '提交中的草稿' } })
+    if (mode === '添加') fireEvent.change(screen.getByLabelText('iCloud 邮箱'), { target: { value: 'draft@icloud.com' } })
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(writes).toBe(1))
+    expect(screen.getByRole('button', { name: '取消' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.mouseDown(screen.getByRole('presentation'))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('名称')).toHaveValue('提交中的草稿')
+    expect(screen.getByRole('button', { name: '保存中…' })).toBeDisabled()
+
+    await act(async () => { finish() })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: /添加账号/ }))
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '下一份草稿' } })
+    await act(async () => { await pending })
+    expect(screen.getByLabelText('名称')).toHaveValue('下一份草稿')
+    expect(writes).toBe(1)
+  })
+
+  it.each([
+    { open: '添加账号', title: '添加账号', method: 'POST', path: '/api/accounts', fields: { '名称': '新增号', 'iCloud 邮箱': 'new@icloud.com' }, submit: '保存' },
+    { open: '编辑', title: '编辑账号', method: 'PATCH', path: '/api/accounts/:id', fields: { '名称': '编辑号' }, submit: '保存' },
+    { open: '更新 Cookie', title: '更新 Cookie', method: 'PUT', path: '/api/accounts/:id/cookies', fields: { 'Cookie': 'session=draft' }, submit: '保存' },
+    { open: 'iCloud 登录', title: 'iCloud 登录', method: 'POST', path: '/api/accounts/:id/login', fields: { '密码': 'password' }, submit: '登录' },
+    { open: '设置 App 密码', title: '设置 App 专用密码', method: 'POST', path: '/api/accounts/:id/password', fields: { '邮箱': 'app@icloud.com', 'App 专用密码': 'xxxx-xxxx' }, submit: '保存' },
+    { open: '设置代理', title: '设置代理', method: 'PUT', path: '/api/accounts/:id/proxy', fields: { '代理地址': 'http://proxy.example:8080' }, submit: '保存' },
+    { open: '接入收件邮箱', title: '接入收件邮箱', method: 'PUT', path: '/api/accounts/:id/mailbox', fields: { '收件邮箱': 'inbox@example.com', '邮箱授权码': 'draft-code' }, submit: '验证并接入' },
+  ])('$title 延迟请求中不可关闭，失败后保留草稿并恢复关闭', async (scenario) => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => { finish = resolve })
+    let writes = 0
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.all(scenario.path, async ({ request }) => {
+        expect(request.method).toBe(scenario.method)
+        writes++
+        await pending
+        return HttpResponse.json({ success: false, code: 'UPSTREAM_FAILURE', message: '延迟失败' }, { status: 502 })
+      }),
+    )
+    renderPage()
+    await screen.findByText('活跃号')
+    const user = userEvent.setup()
+    if (scenario.open !== '添加账号' && scenario.open !== '编辑') await openSettings()
+    await user.click(screen.getAllByRole('button', { name: scenario.open })[0])
+    const dialog = screen.getByRole('dialog', { name: scenario.title })
+    for (const [label, value] of Object.entries(scenario.fields)) {
+      fireEvent.change(within(dialog).getByLabelText(label), { target: { value } })
+    }
+    await user.click(within(dialog).getByRole('button', { name: scenario.submit }))
+    await waitFor(() => expect(writes).toBe(1))
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: '取消' }))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.mouseDown(screen.getByRole('presentation'))
+    expect(dialog).toBeInTheDocument()
+    expect(dialog).toHaveAttribute('aria-busy', 'true')
+    await act(async () => { finish() })
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('延迟失败')
+    for (const [label, value] of Object.entries(scenario.fields)) {
+      expect(within(dialog).getByLabelText(label)).toHaveValue(value)
+    }
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeEnabled()
+    expect(dialog).toHaveAttribute('aria-busy', 'false')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(writes).toBe(1)
+  })
+
   it('编辑中国区账号会预填并提交 PATCH，之后新增不残留编辑值', async () => {
     let patchBody: Record<string, string> | undefined
     server.use(
@@ -277,6 +368,9 @@ describe('AccountsPage', () => {
     // 出现 OTP 输入
     const otpInput = await screen.findByLabelText(/验证码/)
     expect(otpInput).toHaveAttribute('inputmode', 'numeric')
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'false')
+    expect(screen.getByRole('button', { name: '取消' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '验证' })).toBeEnabled()
     await user.type(otpInput, '123456')
     dialog = screen.getByRole('dialog')
     await user.click(within(dialog).getByRole('button', { name: /验证/ }))

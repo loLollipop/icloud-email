@@ -37,6 +37,7 @@ export default function ProxyDialog({ accountId, open, onClose, onSaved }: Proxy
     <Dialog
       title="设置代理"
       open={open}
+      busy={submitting}
       onClose={() => {
         setProxy('')
         setError('')
@@ -61,7 +62,7 @@ export default function ProxyDialog({ accountId, open, onClose, onSaved }: Proxy
         <p className="hint">留空并保存可清除代理；出于安全考虑不回显当前值。</p>
       </div>
       <div className="form-actions">
-        <button onClick={onClose}>取消</button>
+        <button onClick={onClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '保存中…' : '保存'}
         </button>

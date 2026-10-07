@@ -48,6 +48,7 @@ export default function AppPasswordDialog({
     <Dialog
       title="设置 App 专用密码"
       open={open}
+      busy={submitting}
       onClose={() => {
         setEmail('')
         setAppPassword('')
@@ -80,7 +81,7 @@ export default function AppPasswordDialog({
         />
       </div>
       <div className="form-actions">
-        <button onClick={onClose}>取消</button>
+        <button onClick={onClose} disabled={submitting}>取消</button>
         <button className="primary" onClick={() => void handleSubmit()} disabled={submitting}>
           {submitting ? '保存中…' : '保存'}
         </button>

@@ -32,6 +32,7 @@ export default function ConfirmDialog({
     <Dialog
       title={title}
       open={open}
+      busy={busy}
       onClose={() => {
         if (busy) return
         setInput('')

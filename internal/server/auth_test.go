@@ -3,10 +3,59 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"icloud-hme/internal/auth"
 )
+
+func TestAuthLoginRejectsOversizedBodyBeforeSessionCreation(t *testing.T) {
+	s, ts := newTestServer(&fakeBackend{})
+	defer ts.Close()
+	// 盐初始化消费 16 字节；只有真正创建会话时才会再读取随机数。
+	random := &countedBody{Reader: strings.NewReader(strings.Repeat("a", 80))}
+	manager, err := auth.NewManager(auth.Options{Password: "admin-pass-2026-strong", Random: random})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.auth = manager
+	validJSON := `{"password":"admin-pass-2026-strong"}`
+	payload := validJSON + strings.Repeat(" ", maxBodyBytes)
+	for _, unknownLength := range []bool{false, true} {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/auth/login", strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if unknownLength {
+			req.ContentLength = -1
+			req.TransferEncoding = []string{"chunked"}
+		}
+		status, body, cookies := do(t, req)
+		if status != http.StatusRequestEntityTooLarge || !strings.Contains(body, `"code":"PAYLOAD_TOO_LARGE"`) {
+			t.Fatalf("unknownLength=%v: status=%d: %s", unknownLength, status, body)
+		}
+		if len(cookies) != 0 {
+			t.Fatal("oversized login created a session cookie")
+		}
+		if random.readBytes != 16 {
+			t.Fatal("oversized login reached session creation")
+		}
+	}
+	// 恰好上限的 JSON 仍可由登录 handler 完整解析。
+	boundary := validJSON + strings.Repeat(" ", maxBodyBytes-len(validJSON))
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(boundary))
+	recorder := httptest.NewRecorder()
+	s.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || len(recorder.Result().Cookies()) != 1 {
+		t.Fatalf("boundary login failed: status=%d: %s", recorder.Code, recorder.Body.String())
+	}
+	if random.readBytes != 80 {
+		t.Fatal("boundary login did not create a session")
+	}
+}
 
 // TestAuthRequiresSession 验证不带 Cookie 的 API 返回 401/AUTH_REQUIRED。
 func TestAuthRequiresSession(t *testing.T) {
