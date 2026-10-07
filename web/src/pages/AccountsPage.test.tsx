@@ -68,11 +68,6 @@ function renderPage() {
   )
 }
 
-async function openSettings() {
-  const toggle = screen.getAllByRole('button', { name: /连接设置/ })[0]
-  if (toggle.getAttribute('aria-expanded') !== 'true') await userEvent.click(toggle)
-}
-
 describe('AccountsPage', () => {
   beforeEach(() => {
     setCSRFToken('csrf-test')
@@ -215,14 +210,15 @@ describe('AccountsPage', () => {
     { open: '设置 App 密码', title: '设置 App 专用密码', method: 'POST', path: '/api/accounts/:id/password', fields: { '邮箱': 'app@icloud.com', 'App 专用密码': 'xxxx-xxxx' }, submit: '保存' },
     { open: '设置代理', title: '设置代理', method: 'PUT', path: '/api/accounts/:id/proxy', fields: { '代理地址': 'http://proxy.example:8080' }, submit: '保存' },
     { open: '接入收件邮箱', title: '接入收件邮箱', method: 'PUT', path: '/api/accounts/:id/mailbox', fields: { '收件邮箱': 'inbox@example.com', '邮箱授权码': 'draft-code' }, submit: '验证并接入' },
-  ])('$title 延迟请求中不可关闭，失败后保留草稿并恢复关闭', async (scenario) => {
+  ])('$title 绑定所选账号，延迟请求中不可关闭，失败后保留草稿并恢复关闭', async (scenario) => {
     let finish!: () => void
     const pending = new Promise<void>((resolve) => { finish = resolve })
     let writes = 0
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
-      http.all(scenario.path, async ({ request }) => {
+      http.all(scenario.path, async ({ request, params }) => {
         expect(request.method).toBe(scenario.method)
+        if (scenario.open !== '添加账号') expect(params.id).toBe('acc_pending')
         writes++
         await pending
         return HttpResponse.json({ success: false, code: 'UPSTREAM_FAILURE', message: '延迟失败' }, { status: 502 })
@@ -231,8 +227,9 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    if (scenario.open !== '添加账号' && scenario.open !== '编辑') await openSettings()
-    await user.click(screen.getAllByRole('button', { name: scenario.open })[0])
+    await user.click(screen.getByRole('button', {
+      name: scenario.open === '添加账号' ? /添加账号/ : new RegExp(`^${scenario.open} · 等待号$`),
+    }))
     const dialog = screen.getByRole('dialog', { name: scenario.title })
     for (const [label, value] of Object.entries(scenario.fields)) {
       fireEvent.change(within(dialog).getByLabelText(label), { target: { value } })
@@ -303,7 +300,6 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
     const textarea = screen.getByLabelText('Cookie') as HTMLTextAreaElement
     await user.type(textarea, 'a=1; b=2')
@@ -330,7 +326,6 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /更新 Cookie/ })[0])
     await user.type(screen.getByLabelText('Cookie'), 'session=new')
     await user.click(screen.getByRole('button', { name: /保存/ }))
@@ -360,10 +355,9 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /iCloud 登录/ })[0])
-    await user.type(screen.getByLabelText(/密码/), 'p@ssw0rd')
     let dialog = screen.getByRole('dialog')
+    await user.type(within(dialog).getByLabelText('密码'), 'p@ssw0rd')
     await user.click(within(dialog).getByRole('button', { name: /登录/ }))
     // 出现 OTP 输入
     const otpInput = await screen.findByLabelText(/验证码/)
@@ -389,7 +383,6 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置 App 密码/ })[0])
     await user.type(within(screen.getByRole('dialog')).getByLabelText(/邮箱/), 'app@icloud.com')
     await user.type(screen.getByLabelText('App 专用密码'), 'xxxx-xxxx-xxxx-xxxx')
@@ -412,7 +405,6 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置代理/ })[0])
     const input = screen.getByLabelText(/代理地址/) as HTMLInputElement
     expect(input.value).toBe('')
@@ -422,7 +414,6 @@ describe('AccountsPage', () => {
     await waitFor(() => expect(input.value).toBe(''))
     // 关闭后重新打开:仍为空(从不回显)
     await user.click(screen.getByRole('button', { name: /取消/ }))
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /设置代理/ })[0])
     expect((screen.getByLabelText(/代理地址/) as HTMLInputElement).value).toBe('')
   })
@@ -439,7 +430,6 @@ describe('AccountsPage', () => {
     renderPage()
     await screen.findByText('活跃号')
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /删除/ })[0])
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     // 名称不匹配时按钮禁用
@@ -474,7 +464,6 @@ describe('AccountsPage', () => {
     renderPage()
     await waitFor(() => expect(getCalls).toBe(1))
     const user = userEvent.setup()
-    await openSettings()
     await user.click(screen.getAllByRole('button', { name: /删除/ })[0])
     await user.type(screen.getByLabelText(/输入账号名称/), '活跃号')
     await user.click(screen.getByRole('button', { name: /确认删除/ }))
@@ -516,23 +505,76 @@ describe('AccountsPage', () => {
     expect(screen.getByText('没有匹配的账号')).toBeInTheDocument()
   })
 
-  it('次要连接操作按账号折叠，展开后全部可达且名称确认删除保持有效', async () => {
+  it('每个账号直接展示七个有名称和提示的图标按钮，无快捷链接或展开器', async () => {
     server.use(http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })))
     renderPage()
-    const row = await screen.findByRole('row', { name: '活跃号' })
-    const toggle = within(row).getByRole('button', { name: '连接设置 · 活跃号' })
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByRole('region', { name: '连接设置 · 活跃号' })).not.toBeInTheDocument()
-    expect(within(row).getByRole('link', { name: '收件箱' })).toHaveAttribute('href', '/inbox?account_id=acc_active')
-    await userEvent.click(toggle)
-    expect(toggle).toHaveAttribute('aria-expanded', 'true')
-    const settings = screen.getByRole('region', { name: '连接设置 · 活跃号' })
-    for (const name of ['更新 Cookie', 'iCloud 登录', '设置 App 密码', '接入收件邮箱', '设置代理', '删除']) {
-      expect(within(settings).getByRole('button', { name })).toBeVisible()
+    await screen.findByRole('row', { name: '活跃号' })
+    for (const account of accounts) {
+      const row = screen.getByRole('row', { name: account.name })
+      const actions = within(row).getByRole('group', { name: `账户操作 · ${account.name}` })
+      expect(within(actions).getAllByRole('button')).toHaveLength(7)
+      for (const name of ['编辑', '更新 Cookie', 'iCloud 登录', '设置 App 密码', '接入收件邮箱', '设置代理', '删除']) {
+        const button = within(actions).getByRole('button', { name: `${name} · ${account.name}` })
+        expect(button).toBeVisible()
+        expect(button).toBeEnabled()
+        expect(button).toHaveAttribute('title', name)
+        expect(button).toHaveClass('account-action-button')
+        expect(button.textContent).toBe('')
+        expect(button.querySelector('svg')).not.toBeNull()
+        expect(button).not.toHaveAttribute('aria-expanded')
+      }
+      expect(within(row).queryByRole('link')).not.toBeInTheDocument()
     }
-    await userEvent.click(screen.getByRole('button', { name: '连接设置 · 等待号' }))
-    expect(screen.queryByRole('region', { name: '连接设置 · 活跃号' })).not.toBeInTheDocument()
-    expect(screen.getByRole('region', { name: '连接设置 · 等待号' })).toBeVisible()
+    expect(screen.getAllByRole('row')).toHaveLength(accounts.length + 1)
+    expect(screen.queryByRole('button', { name: /连接设置/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /连接设置/ })).not.toBeInTheDocument()
+  })
+
+  it('非首行删除绑定对应账号并要求精确名称，提交期间禁止关闭', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => { finish = resolve })
+    let deletedID: string | undefined
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.delete('/api/accounts/:id', async ({ params }) => {
+        deletedID = String(params.id)
+        await pending
+        return HttpResponse.json({ success: true, data: { id: params.id } })
+      }),
+    )
+    renderPage()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '删除 · 等待号' }))
+    const dialog = screen.getByRole('dialog', { name: '删除账号' })
+    expect(dialog).toHaveTextContent('「等待号」')
+    fireEvent.change(within(dialog).getByLabelText('输入账号名称'), { target: { value: '活跃号' } })
+    expect(within(dialog).getByRole('button', { name: '确认删除' })).toBeDisabled()
+    expect(deletedID).toBeUndefined()
+    fireEvent.change(within(dialog).getByLabelText('输入账号名称'), { target: { value: '等待号' } })
+    await user.click(within(dialog).getByRole('button', { name: '确认删除' }))
+    await waitFor(() => expect(deletedID).toBe('acc_pending'))
+    expect(dialog).toHaveAttribute('aria-busy', 'true')
+    expect(within(dialog).getByRole('button', { name: '取消' })).toBeDisabled()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    fireEvent.mouseDown(screen.getByRole('presentation'))
+    expect(dialog).toBeInTheDocument()
+    await act(async () => { finish() })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('已接入邮箱地址保留在凭据提示，并为对应账号预填收件邮箱配置', async () => {
+    const mailbox = { provider: 'outlook', email: 'linked@example.com', imap_host: 'outlook.office365.com', imap_port: 993 }
+    server.use(http.get('/api/accounts', () => HttpResponse.json({
+      success: true, data: accounts.map((account) => account.id === 'acc_pending' ? { ...account, mailbox } : account),
+    })))
+    renderPage()
+    const row = await screen.findByRole('row', { name: '等待号' })
+    expect(within(row).getByTitle('收件邮箱：已配置 · linked@example.com（不代表当前连接状态）')).toBeInTheDocument()
+    await userEvent.click(within(row).getByRole('button', { name: '接入收件邮箱 · 等待号' }))
+    const dialog = screen.getByRole('dialog', { name: '接入收件邮箱' })
+    expect(within(dialog).getByLabelText('收件邮箱')).toHaveValue('linked@example.com')
+    expect(within(dialog).getByLabelText('邮箱服务商')).toHaveValue('outlook')
+    expect(within(dialog).getByLabelText('邮箱授权码')).toHaveValue('')
   })
 
 })

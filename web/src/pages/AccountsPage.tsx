@@ -1,5 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { request, ApiError } from '../api/client'
 import type { AccountSummary } from '../api/types'
 import {
@@ -32,8 +31,7 @@ import {
   IconRefresh,
   IconSearch,
   IconSettings,
-  IconAliases,
-  IconChevronDown,
+  IconCloud,
 } from '../components/icons'
 
 const statusMeta: Record<string, { text: string; badge: string; icon: typeof IconCheck }> = {
@@ -86,7 +84,6 @@ export default function AccountsPage() {
   const [pageSize, setPageSize] = useState(10)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
-  const [expandedAccount, setExpandedAccount] = useState<string | null>(null)
 
   const { show } = useToast()
 
@@ -210,8 +207,7 @@ export default function AccountsPage() {
               <thead><tr><th scope="col">账户</th><th scope="col">状态</th><th scope="col">隐藏邮箱</th><th scope="col">连接配置</th><th scope="col">最近验证</th><th scope="col">操作</th></tr></thead>
               <tbody>
                 {visibleAccounts.map((acc) => (
-                  <Fragment key={acc.id}>
-                    <tr className="account-row" aria-label={acc.name}>
+                    <tr key={acc.id} className="account-row" aria-label={acc.name}>
                       <td className="account-cell-identity">
                         <div className="account-identity"><strong>{acc.name}</strong><span>{acc.icloud_email || acc.real_email || '未填写邮箱'}</span></div>
                       </td>
@@ -222,11 +218,11 @@ export default function AccountsPage() {
                           {[
                             { name: 'Cookie', configured: acc.has_cookies },
                             { name: 'App 密码', configured: acc.has_app_password },
-                            { name: '收件邮箱', configured: Boolean(acc.mailbox) },
+                            { name: '收件邮箱', configured: Boolean(acc.mailbox), detail: acc.mailbox?.email },
                             { name: '代理', configured: acc.has_proxy },
                           ].map((credential) => (
                             <li key={credential.name} className={credential.configured ? 'is-configured' : ''}
-                              title={`${credential.name}：${credential.configured ? '已配置' : '未配置'}（不代表当前连接状态）`}>
+                              title={`${credential.name}：${credential.configured ? '已配置' : '未配置'}${credential.detail ? ` · ${credential.detail}` : ''}（不代表当前连接状态）`}>
                               {credential.configured ? <IconCheck size={12} /> : <span aria-hidden="true">−</span>}
                               {credential.name}<span className="visually-hidden">：{credential.configured ? '已配置' : '未配置'}</span>
                             </li>
@@ -235,31 +231,24 @@ export default function AccountsPage() {
                       </td>
                       <td className="account-cell-validation"><span className="account-cell-label">最近验证</span><time dateTime={acc.last_validated || undefined}>{formatValidation(acc.last_validated)}</time></td>
                       <td className="account-cell-actions">
-                        <div className="account-actions row-actions">
-                          <Link className="account-inbox-link" to={`/inbox?account_id=${encodeURIComponent(acc.id)}`}><IconMail size={14} />收件箱</Link>
-                          <Link to={`/aliases?account_id=${encodeURIComponent(acc.id)}`}><IconAliases size={14} />别名</Link>
-                          <button className="ghost" onClick={() => { setEditing(acc); setFormOpen(true) }}><IconEdit size={14} />编辑</button>
-                          <button className="account-settings-toggle ghost" aria-label={`连接设置 · ${acc.name}`} aria-expanded={expandedAccount === acc.id} aria-controls={expandedAccount === acc.id ? `account-settings-${acc.id}` : undefined}
-                            onClick={() => setExpandedAccount((current) => current === acc.id ? null : acc.id)}><IconSettings size={14} /><span>配置</span><IconChevronDown size={12} /></button>
+                        <div className="account-actions" role="group" aria-label={`账户操作 · ${acc.name}`}>
+                          <button type="button" className="account-action-button" title="编辑" aria-label={`编辑 · ${acc.name}`}
+                            onClick={() => { setEditing(acc); setFormOpen(true) }}><IconEdit size={16} /></button>
+                          <button type="button" className="account-action-button" title="更新 Cookie" aria-label={`更新 Cookie · ${acc.name}`}
+                            onClick={() => setCookieFor(acc)}><IconRefresh size={16} /></button>
+                          <button type="button" className="account-action-button is-primary" title="iCloud 登录" aria-label={`iCloud 登录 · ${acc.name}`}
+                            onClick={() => setLoginFor(acc)}><IconCloud size={16} /></button>
+                          <button type="button" className="account-action-button" title="设置 App 密码" aria-label={`设置 App 密码 · ${acc.name}`}
+                            onClick={() => setAppPwdFor(acc)}><IconKey size={16} /></button>
+                          <button type="button" className="account-action-button" title="接入收件邮箱" aria-label={`接入收件邮箱 · ${acc.name}`}
+                            onClick={() => setMailboxFor(acc)}><IconMail size={16} /></button>
+                          <button type="button" className="account-action-button" title="设置代理" aria-label={`设置代理 · ${acc.name}`}
+                            onClick={() => setProxyFor(acc)}><IconSettings size={16} /></button>
+                          <button type="button" className="account-action-button danger" title="删除" aria-label={`删除 · ${acc.name}`}
+                            onClick={() => setDeleteFor(acc)}><IconTrash size={16} /></button>
                         </div>
                       </td>
                     </tr>
-                    {expandedAccount === acc.id && (
-                      <tr className="account-settings-row"><td colSpan={6}>
-                        <div className="account-settings-content" id={`account-settings-${acc.id}`} role="region" aria-label={`连接设置 · ${acc.name}`}>
-                          <div className="row-actions">
-                            <button onClick={() => setCookieFor(acc)}>更新 Cookie</button>
-                            <button onClick={() => setLoginFor(acc)}><IconKey size={14} />iCloud 登录</button>
-                            <button onClick={() => setAppPwdFor(acc)}>设置 App 密码</button>
-                            <button onClick={() => setMailboxFor(acc)}>接入收件邮箱</button>
-                            <button onClick={() => setProxyFor(acc)}>设置代理</button>
-                            <button className="danger" onClick={() => setDeleteFor(acc)}><IconTrash size={14} />删除</button>
-                          </div>
-                          {acc.mailbox && <p className="hint">收件邮箱：{acc.mailbox.email}</p>}
-                        </div>
-                      </td></tr>
-                    )}
-                  </Fragment>
                 ))}
               </tbody>
             </table>

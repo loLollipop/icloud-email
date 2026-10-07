@@ -53,18 +53,21 @@ describe('AppShell', () => {
     expect(screen.getByText('接入指南')).toBeInTheDocument()
   })
 
-  it('主题选择保存唯一界面偏好，系统模式移除明确主题', async () => {
+  it('主题按钮直接在浅深色间切换，独立系统按钮恢复跟随系统', async () => {
     localStorage.setItem('icloud-mail-theme', 'dark')
     renderShell()
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
-    await userEvent.click(screen.getByTitle('外观设置'))
-    const select = screen.getByLabelText('外观', { selector: '#workspace-theme' })
-    await userEvent.selectOptions(select, 'light')
+    await userEvent.click(screen.getByRole('button', { name: '切换为浅色' }))
     expect(document.documentElement).toHaveAttribute('data-theme', 'light')
     expect(localStorage.getItem('icloud-mail-theme')).toBe('light')
-    await userEvent.selectOptions(select, 'system')
+    await userEvent.click(screen.getByRole('button', { name: '切换为深色' }))
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
+    expect(screen.getByRole('button', { name: '跟随系统' })).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(screen.getByRole('button', { name: '跟随系统' }))
     expect(document.documentElement).not.toHaveAttribute('data-theme')
     expect(localStorage.getItem('icloud-mail-theme')).toBeNull()
+    expect(screen.getByRole('button', { name: '跟随系统' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('combobox', { name: '外观' })).not.toBeInTheDocument()
   })
 
   it('存储不可用时仍可切换主题，退出调用认证并返回登录页', async () => {
@@ -72,8 +75,7 @@ describe('AppShell', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled') })
     vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('disabled') })
     renderShell()
-    await userEvent.click(screen.getByTitle('外观设置'))
-    await userEvent.selectOptions(screen.getByLabelText('外观', { selector: '#workspace-theme' }), 'dark')
+    await userEvent.click(screen.getByRole('button', { name: '切换为深色' }))
     expect(document.documentElement).toHaveAttribute('data-theme', 'dark')
     await userEvent.click(screen.getByTitle('管理员账户'))
     await userEvent.click(screen.getByRole('button', { name: '退出登录' }))
