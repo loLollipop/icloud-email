@@ -208,6 +208,15 @@ export function IconCloud(props: IconProps) {
   return <svg {...base(props)}><path d="M7 18a5 5 0 1 1 .8-9.94A7 7 0 0 1 21 11a3.5 3.5 0 0 1-1.5 7H7Z" /></svg>
 }
 
+/** GitHub mark is kept inline because it is a brand asset rather than an action icon. */
+export function IconGithub(props: IconProps) {
+  return (
+    <svg {...base({ ...props, fill: 'currentColor', stroke: 'none' })}>
+      <path d="M12 .8a11.2 11.2 0 0 0-3.54 21.83c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.73 1.16 1.73 1.16 1 1.72 2.62 1.23 3.26.94.1-.73.39-1.23.71-1.51-2.5-.28-5.13-1.25-5.13-5.58 0-1.23.44-2.23 1.16-3.02-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.15a10.76 10.76 0 0 1 5.64 0c2.15-1.45 3.1-1.15 3.1-1.15.61 1.55.23 2.7.11 2.98.72.79 1.16 1.79 1.16 3.02 0 4.34-2.64 5.3-5.15 5.58.4.35.76 1.04.76 2.1v3.11c0 .3.2.65.78.54A11.2 11.2 0 0 0 12 .8Z" />
+    </svg>
+  )
+}
+
 export function IconArrowLeft(props: IconProps) {
   return <svg {...base(props)}><path d="m12 5-7 7 7 7M5 12h15" /></svg>
 }

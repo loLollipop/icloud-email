@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthProvider'
-import { IconAccounts, IconAliases, IconCloud, IconHelp, IconInbox, IconLogout, IconMoon, IconSun } from './icons'
+import { IconAccounts, IconAliases, IconChevronDown, IconCloud, IconGithub, IconHelp, IconInbox, IconLogout, IconMoon, IconSun } from './icons'
 
 type Theme = 'system' | 'light' | 'dark'
 
@@ -25,6 +25,7 @@ export default function AppShell() {
   const { pathname } = useLocation()
   const [theme, setTheme] = useState<Theme>(readTheme)
   const isMail = pathname === '/inbox'
+  const isManagement = pathname === '/accounts' || pathname === '/aliases'
   const title = navigation.find((item) => item.path === pathname)?.label ?? '使用指南'
 
   useEffect(() => {
@@ -54,6 +55,16 @@ export default function AppShell() {
             <NavLink key={path} to={path}><Icon size={18} /><span>{label}</span></NavLink>
           ))}
         </nav>
+        <a
+          className="workspace-repository-link"
+          href="https://github.com/loLollipop/icloud-email"
+          target="_blank"
+          rel="noreferrer"
+          aria-label="打开 GitHub 仓库 loLollipop/icloud-email"
+        >
+          <IconGithub size={18} />
+          <span><strong>GitHub</strong><small>loLollipop/icloud-email</small></span>
+        </a>
       </aside>
       <header className="workspace-topbar">
         <div className="workspace-breadcrumb"><span>工作区</span><span aria-hidden="true">/</span><h1>{title}</h1></div>
@@ -69,10 +80,22 @@ export default function AppShell() {
               </select>
             </div>
           </details>
-          <button className="workspace-icon-button ghost" onClick={() => void handleLogout()} aria-label="退出登录" title="退出登录"><IconLogout size={18} /></button>
+          <details className="workspace-user-menu">
+            <summary className="workspace-user-trigger" aria-label="管理员账户菜单" title="管理员账户">
+              <span className="workspace-user-avatar" aria-hidden="true">A</span>
+              <span className="workspace-user-name">admin</span>
+              <IconChevronDown size={14} />
+            </summary>
+            <div className="workspace-user-popover">
+              <span className="workspace-user-popover-label">管理员账户</span>
+              <button className="workspace-user-logout" onClick={() => void handleLogout()} aria-label="退出登录">
+                <IconLogout size={16} />退出登录
+              </button>
+            </div>
+          </details>
         </div>
       </header>
-      <main id="main-content" className={`workspace-main${isMail ? ' workspace-main--mail' : ''}`} tabIndex={-1}>
+      <main id="main-content" className={`workspace-main${isMail ? ' workspace-main--mail' : ''}${isManagement ? ' workspace-main--management' : ''}`} tabIndex={-1}>
         <Outlet />
       </main>
     </div>

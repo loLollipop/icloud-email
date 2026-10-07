@@ -293,7 +293,7 @@ export default function AliasesPage() {
     confirm?.type === 'delete' ? '确认删除' : confirm?.type === 'deactivate' ? '确认停用' : '确认激活'
 
   return (
-    <section className="aliases-page" aria-label="隐藏邮箱管理">
+    <section className="aliases-page management-page" aria-label="隐藏邮箱管理">
       <div className="page-header">
         <p className="page-description">用不同的邮箱地址，保留同一个收件目标。</p>
         <div className="page-actions">
@@ -362,14 +362,15 @@ export default function AliasesPage() {
         <button aria-pressed={filter === 'inactive'} onClick={() => { setFilter('inactive'); setPage(1) }}>停用 <strong>{stats.inactive}</strong></button>
       </div>
 
-      <AsyncState
-        loading={loading}
-        error={error}
-        empty={filtered.length === 0}
-        emptyText={aliases.length === 0 ? '暂无别名' : '没有匹配的别名'}
-        onRetry={handleRetry}
-      >
-        <div className="table-wrap">
+      <div className="management-content">
+        <AsyncState
+          loading={loading}
+          error={error}
+          empty={filtered.length === 0}
+          emptyText={aliases.length === 0 ? '暂无别名' : '没有匹配的别名'}
+          onRetry={handleRetry}
+        >
+        <div className="table-wrap management-scroll-region">
           <table>
             <thead>
               <tr>
@@ -454,15 +455,16 @@ export default function AliasesPage() {
             </tbody>
           </table>
         </div>
-        <Pagination
-          page={currentPage}
-          pageSize={pageSize}
-          totalItems={filtered.length}
-          onPageChange={setPage}
-          onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }}
-          label="别名列表分页"
-        />
-      </AsyncState>
+          <Pagination
+            page={currentPage}
+            pageSize={pageSize}
+            totalItems={filtered.length}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }}
+            label="别名列表分页"
+          />
+        </AsyncState>
+      </div>
 
       <CreateAliasDialog
         accountId={accountId}

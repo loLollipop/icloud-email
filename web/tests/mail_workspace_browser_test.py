@@ -24,8 +24,12 @@ def mock_api(route):
         data = {'csrf_token': 'preview-only', 'expires_at': '2099-01-01T00:00:00Z'}
     elif parsed.path == '/api/accounts':
         data = [{**ACCOUNT, 'name': '我的 iCloud', 'icloud_email': 'my.mail@icloud.test', 'alias_total': 68, 'alias_active': 65, 'has_cookies': True}, {**ACCOUNT, 'id': 'acc_2', 'name': '备用邮箱', 'icloud_email': 'work.mail@icloud.test', 'alias_total': 12, 'alias_active': 12, 'status': 'pending', 'has_app_password': False}]
+        data.extend({**ACCOUNT, 'id': f'acc_{i}', 'name': f'工作邮箱 {i}', 'icloud_email': f'work.{i}@icloud.test'} for i in range(3, 27))
     elif parsed.path == '/api/aliases':
         data = {'aliases': [{'email': f'{name}@icloud.test', 'anonymousId': str(i), 'label': label, 'active': i != 4, 'createdAt': '2026-10-01T00:00:00Z'} for i, (name, label) in enumerate([('design.notes', '设计与协作'), ('daily.work', '日常工作'), ('paper.reading', '阅读订阅'), ('shopping.list', '购物与账单'), ('archive.box', '历史项目')])]}
+        data['aliases'].extend({'email': f'private.{i}@icloud.test', 'anonymousId': str(i), 'label': f'订阅 {i}', 'active': True, 'createdAt': '2026-10-01T00:00:00Z'} for i in range(5, 68))
+    elif parsed.path == '/api/auth/logout':
+        data = {}
     elif parsed.path == '/api/inbox':
         rows = [m for m in MESSAGES if p.get('q', [''])[0].lower() in m['subject'].lower()]
         size = int(p.get('page_size', ['20'])[0]); page = int(p.get('page', ['1'])[0])
@@ -108,11 +112,27 @@ def main():
             page.get_by_role('button', name='← 返回全部邮件').click()
             page.screenshot(path=str(OUT / 'inbox-mobile.png'))
             for path in ['accounts', 'aliases', 'help']:
-                for width, height in [(1440, 900), (390, 844), (320, 640)]:
+                for width, height in [(1440, 900), (1366, 768), (390, 844), (320, 640)]:
                     page.set_viewport_size({'width': width, 'height': height})
                     page.goto(base + '/' + path)
                     page.wait_for_load_state('networkidle')
                     no_outer_scroll(page)
+                    if path in ['accounts', 'aliases']:
+                        region = page.locator('.management-scroll-region')
+                        pagination = page.locator('.management-content > .pagination')
+                        # A full page of data must scroll inside the panel, leaving controls visible.
+                        assert region.evaluate('e => e.clientHeight >= 80 && e.scrollHeight > e.clientHeight'), (path, width, region.bounding_box())
+                        assert page.locator('.management-page').evaluate('e => e.scrollHeight <= e.clientHeight + 1'), (path, width)
+                        before = pagination.bounding_box()
+                        region.evaluate('e => e.scrollTop = e.scrollHeight')
+                        assert region.evaluate('e => e.scrollTop > 0')
+                        assert pagination.bounding_box() == before
+                        expect(pagination).to_be_in_viewport()
+                        page.get_by_role('button', name='下一页', exact=True).click()
+                        expect(pagination).to_contain_text('第 11-20 项')
+                        page.get_by_role('button', name='上一页', exact=True).click()
+                        region.evaluate('e => e.scrollTop = 0')
+                        no_outer_scroll(page)
                     if path == 'aliases':
                         # Destructive action labels must not match the button fill.
                         assert page.locator('.alias-secondary-actions button.danger').first.evaluate('e => getComputedStyle(e).color !== getComputedStyle(e).backgroundColor')
@@ -131,6 +151,15 @@ def main():
             expect(page.locator('.mail-body')).to_contain_text('纯文本邮件正文')
             page.get_by_role('button', name='原始排版', exact=True).click()
             expect(page.locator('iframe')).to_be_visible()
+            page.locator('.workspace-theme-menu summary').click()
+            repository = page.get_by_role('link', name='打开 GitHub 仓库 loLollipop/icloud-email')
+            expect(repository).to_have_attribute('href', 'https://github.com/loLollipop/icloud-email')
+            expect(repository).to_be_in_viewport()
+            expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_hidden()
+            page.locator('.workspace-user-trigger').click()
+            expect(page.get_by_role('button', name='退出登录', exact=True)).to_be_in_viewport()
+            page.get_by_role('button', name='退出登录', exact=True).click()
+            expect(page.get_by_role('button', name='进入工作区')).to_be_visible()
             assert not errors, errors
             browser.close()
     finally:

@@ -46,6 +46,22 @@
 }
 .workspace-nav a:hover { color: var(--color-text); background: var(--color-bg-raised); }
 .workspace-nav a[aria-current='page'] { color: var(--color-primary); background: var(--color-primary-soft); font-weight: 600; }
+.workspace-repository-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: auto 4px 0;
+  padding: 12px 10px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: 12px;
+}
+.workspace-repository-link:hover { color: var(--color-text); }
+.workspace-repository-link > svg { flex: 0 0 auto; color: var(--color-text); }
+.workspace-repository-link span { min-width: 0; display: grid; gap: 2px; }
+.workspace-repository-link strong { font-size: 12px; font-weight: 600; }
+.workspace-repository-link small { overflow: hidden; color: var(--color-text-tertiary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-topbar {
   grid-column: 2;
   grid-row: 1;
@@ -69,8 +85,48 @@
 .workspace-theme-popover { position: absolute; z-index: var(--z-sticky); top: 42px; right: 0; display: grid; gap: 7px; min-width: 150px; padding: 11px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-raised); box-shadow: var(--shadow-md); }
 .workspace-theme-popover span { color: var(--color-text-secondary); font-size: 11px; }
 .workspace-theme-popover select { min-height: 32px; width: 100%; padding-block: 4px; font-size: 12px; }
+.workspace-user-menu { position: relative; }
+.workspace-user-menu > summary { list-style: none; }
+.workspace-user-menu > summary::-webkit-details-marker { display: none; }
+.workspace-user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 3px 7px 3px 3px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+.workspace-user-trigger:hover,
+.workspace-user-menu[open] .workspace-user-trigger { border-color: var(--color-border); background: var(--color-bg-subtle); color: var(--color-text); }
+.workspace-user-avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--color-primary); color: #fff; font-size: 12px; font-weight: 700; }
+.workspace-user-name { font-weight: 600; }
+.workspace-user-trigger svg { color: var(--color-text-tertiary); }
+.workspace-user-popover { position: absolute; z-index: var(--z-sticky); top: 42px; right: 0; display: grid; gap: 8px; min-width: 158px; padding: 10px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-raised); box-shadow: var(--shadow-md); }
+.workspace-user-popover-label { padding: 2px 4px 5px; color: var(--color-text-tertiary); font-size: 11px; }
+.workspace-user-logout { display: inline-flex; align-items: center; gap: 8px; justify-content: flex-start; width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid transparent; background: transparent; color: var(--color-text-secondary); font-size: 12px; }
+.workspace-user-logout:hover { background: var(--color-danger-soft); border-color: transparent; color: var(--color-danger); }
 .workspace-main { position: relative; grid-column: 2; grid-row: 2; min-width: 0; min-height: 0; overflow: auto; padding: 26px 28px; }
 .workspace-main--mail { overflow: hidden; padding: 0; }
+.workspace-main--management { overflow: hidden; }
+.management-page { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
+.management-page > .page-header,
+.management-page > .account-toolbar,
+.management-page > .alias-toolbar,
+.management-page > .alias-stats { flex-shrink: 0; }
+.management-content { display: flex; flex: 1; flex-direction: column; min-height: 170px; overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg-raised); }
+.management-content > .skeleton,
+.management-content > .empty-state { margin: auto; }
+.management-content > div:not(.management-scroll-region) { overflow: auto; padding: 16px; }
+.management-content > .pagination { flex-shrink: 0; margin: 0; padding: 12px 16px; border-top: 1px solid var(--color-border); }
+.management-scroll-region { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.account-grid.management-scroll-region { align-content: start; align-items: start; padding: 16px; background: var(--color-bg); }
+.aliases-page .table-wrap.management-scroll-region { border: 0; border-radius: 0; box-shadow: none; }
+.aliases-page thead th { position: sticky; top: 0; z-index: 1; }
 .page-description { margin: 0; color: var(--color-text-secondary); font-size: 13px; }
 .button-link { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 7px 14px; border: 1px solid var(--color-border-strong); border-radius: var(--radius); color: var(--color-primary); text-decoration: none; }
 .button-link.primary { color: white; background: var(--color-primary); border-color: transparent; }
@@ -188,14 +244,15 @@
   .account-count { display: none; }
   .account-grid { grid-template-columns: 1fr; }
   .account-card { padding: 16px 16px 0; }
-  .alias-toolbar.card { grid-template-columns: 1fr; gap: 12px; padding: 14px; }
+  .alias-toolbar.card { grid-template-columns: minmax(0, 1fr) 100px; gap: 10px; padding: 12px; }
+  .alias-toolbar .toolbar-field-search { grid-column: 1 / -1; grid-row: 2; }
   .alias-toolbar .toolbar-field:last-child { grid-column: auto; }
-  .aliases-page .table-wrap { overflow: visible; border: 0; background: transparent; box-shadow: none; }
+  .aliases-page .table-wrap.management-scroll-region { padding: 12px; background: var(--color-bg); }
   .aliases-page table, .aliases-page tbody { display: block; }
   .aliases-page thead { display: block; padding: 0 0 12px; }
   .aliases-page thead tr { display: block; }
-  .aliases-page th { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-  .aliases-page th[aria-sort] { display: block; position: static; width: auto; height: auto; overflow: visible; clip: auto; padding: 0; border: 0; background: transparent; }
+  .aliases-page thead th { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  .aliases-page thead th[aria-sort] { display: block; position: static; width: auto; height: auto; overflow: visible; clip: auto; padding: 0; border: 0; background: transparent; }
   .aliases-page tbody tr { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 12px; padding: 14px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-bg-raised); gap: 12px; }
   .aliases-page td { display: block; min-width: 0; padding: 0; border: 0; }
   .aliases-page td::before { display: block; margin-bottom: 4px; content: attr(data-label); font-size: 10px; color: var(--color-text-tertiary); }
@@ -205,6 +262,9 @@
   .aliases-page .link-like { font-size: 13px; }
   .alias-secondary-actions { margin-left: auto; }
   .help-steps li { padding: 18px; gap: 12px; }
+  .workspace-repository-link { display: none; }
+  .workspace-user-name { display: none; }
+  .workspace-user-trigger { padding-right: 3px; }
   .login-page { padding: 28px 16px 52px; }
   .login-shell { display: flex; flex-direction: column; gap: 24px; align-items: stretch; width: min(400px, 100%); }
   .login-brand { align-items: center; text-align: center; }
@@ -217,4 +277,14 @@
 
 @media (prefers-reduced-motion: reduce) {
   .login-page::after { display: none; }
+}
+
+@media (max-width: 350px) {
+  .management-content > .pagination { gap: 4px; padding: 6px 8px; }
+  .management-content > .pagination .pagination-status { display: none; }
+  .management-content > .pagination .pagination-size { gap: 4px; font-size: 11px; }
+  .management-content > .pagination .pagination-size > span { display: none; }
+  .management-content > .pagination .pagination-pages { width: auto; flex: 1; justify-content: flex-end; gap: 1px; }
+  .management-content > .pagination .pagination-page-entry { gap: 0; }
+  .management-content > .pagination .pagination-pages button { min-width: 24px; min-height: 28px; padding-inline: 3px; font-size: 11px; }
 }

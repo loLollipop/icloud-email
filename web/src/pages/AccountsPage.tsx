@@ -172,7 +172,7 @@ export default function AccountsPage() {
   }
 
   return (
-    <section className="accounts-page" aria-label="邮箱账户管理">
+    <section className="accounts-page management-page" aria-label="邮箱账户管理">
       <div className="page-header">
         <p className="page-description">连接 iCloud 账号，管理隐藏邮箱与收件凭据。</p>
         <div className="page-actions">
@@ -199,10 +199,11 @@ export default function AccountsPage() {
         </div>
         <span className="account-count">{filteredAccounts.length} 个账号</span>
       </div>
-      <AsyncState loading={loading} error={error} empty={filteredAccounts.length === 0}
-        emptyText={accounts.length === 0 ? '暂无账号，点击“添加账号”开始' : '没有匹配的账号'} onRetry={handleRetry}>
-        <div className="account-grid">
-          {visibleAccounts.map((acc) => (
+      <div className="management-content">
+        <AsyncState loading={loading} error={error} empty={filteredAccounts.length === 0}
+          emptyText={accounts.length === 0 ? '暂无账号，点击“添加账号”开始' : '没有匹配的账号'} onRetry={handleRetry}>
+          <div className="account-grid management-scroll-region">
+            {visibleAccounts.map((acc) => (
             <article className="account-card" key={acc.id} aria-label={acc.name}>
               <div className="account-card-header">
                 <span className="account-avatar" aria-hidden="true">{acc.name.slice(0, 1)}</span>
@@ -248,11 +249,12 @@ export default function AccountsPage() {
                 </div>
               </details>
             </article>
-          ))}
-        </div>
-        <Pagination page={currentPage} pageSize={pageSize} totalItems={filteredAccounts.length}
-          onPageChange={setPage} onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }} label="账号列表分页" />
-      </AsyncState>
+            ))}
+          </div>
+          <Pagination page={currentPage} pageSize={pageSize} totalItems={filteredAccounts.length}
+            onPageChange={setPage} onPageSizeChange={(nextPageSize) => { setPageSize(nextPageSize); setPage(1) }} label="账号列表分页" />
+        </AsyncState>
+      </div>
 
       <AccountFormDialog
         open={formOpen}
