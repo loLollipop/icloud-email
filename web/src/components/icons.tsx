@@ -253,6 +253,10 @@ export function IconMonitor(props: IconProps) {
   return <svg {...base(props)}><rect x="3" y="3" width="18" height="13" rx="2" /><path d="M8 21h8m-4-5v5" /></svg>
 }
 
+export function IconShare(props: IconProps) {
+  return <svg {...base(props)}><circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" /><path d="m8.6 10.5 6.8-4m-6.8 7 6.8 4" /></svg>
+}
+
 export function IconHelp(props: IconProps) {
   return <svg {...base(props)}><circle cx="12" cy="12" r="9" /><path d="M9.2 9a3 3 0 0 1 5.6 1.5c-.6 1-2.8 1.5-2.8 3M12 17h.01" /></svg>
 }

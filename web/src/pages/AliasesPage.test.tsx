@@ -83,6 +83,22 @@ describe('AliasesPage', () => {
     server.resetHandlers()
   })
 
+  it('每行分发入口绑定所选账号和别名，不离开管理页面', async () => {
+    server.use(
+      http.get('/api/accounts', () => HttpResponse.json({ success: true, data: accounts })),
+      http.get('/api/aliases', () => HttpResponse.json({ success: true, data: { aliases } })),
+      http.get('/api/aliases/anon_beta/share', ({ request }) => {
+        expect(new URL(request.url).searchParams.get('account_id')).toBe('acc_2')
+        return HttpResponse.json({ success: true, data: { active: false } })
+      }),
+    )
+    renderPage('/aliases?account_id=acc_2')
+    await userEvent.click(await screen.findByRole('button', { name: '分发邮箱 · beta@icloud.com' }))
+    const dialog = screen.getByRole('dialog', { name: '分发邮箱' })
+    expect(within(dialog).getByText('beta@icloud.com')).toBeInTheDocument()
+    expect(await within(dialog).findByRole('button', { name: '生成分发链接' })).toBeInTheDocument()
+  })
+
   it('无账号时显示引导', async () => {
     server.use(
       http.get('/api/accounts', () => HttpResponse.json({ success: true, data: [] })),
@@ -318,7 +334,7 @@ describe('AliasesPage', () => {
     renderPage()
     await screen.findByText('alpha@icloud.com')
     const table = screen.getByRole('table')
-    const emailButtons = () => within(table).getAllByRole('button', { name: /@icloud\.com/ })
+    const emailButtons = () => within(table).getAllByRole('button', { name: /^[^ ]+@icloud\.com$/ })
     expect(emailButtons().map((button) => button.textContent)).toEqual([
       'alpha@icloud.com',
       'beta@icloud.com',

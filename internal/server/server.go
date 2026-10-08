@@ -13,6 +13,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -32,27 +33,40 @@ type Config struct {
 	AdminPassword string
 	SessionTTL    time.Duration
 	SecureCookie  bool
+	DataDir       string
 }
 
 // Server 封装 Gin 引擎、账号后端与认证。
 type Server struct {
-	be      Backend
-	auth    *auth.Manager
-	limiter *auth.Limiter
-	aliases *aliasCache
-	cfg     Config
-	r       *gin.Engine
+	be                Backend
+	auth              *auth.Manager
+	limiter           *auth.Limiter
+	aliases           *aliasCache
+	cfg               Config
+	r                 *gin.Engine
+	shares            *shareStore
+	shareLimiter      *auth.Limiter
+	shareWriteTimeout time.Duration
 }
 
 // New 创建 Server。mgr 为账号管理器,cfg 为安全配置。
 func New(mgr *account.Manager, cfg Config) (*Server, error) {
+	if cfg.DataDir == "" {
+		cfg.DataDir = mgr.DataDirectory()
+	}
 	if _, err := auth.NewManager(auth.Options{
 		Password: cfg.AdminPassword,
 		TTL:      cfg.SessionTTL,
 	}); err != nil {
 		return nil, err
 	}
-	return newWithBackend(&managerBackend{mgr: mgr}, cfg), nil
+	shares, err := newShareStore(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	s := newWithBackend(&managerBackend{mgr: mgr}, cfg)
+	s.shares = shares
+	return s, nil
 }
 
 // newWithBackend 创建 Server 并注入 Backend(测试使用内存 fake)。
@@ -61,17 +75,32 @@ func newWithBackend(be Backend, cfg Config) *Server {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	s := &Server{
-		be:      be,
-		limiter: auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
-		aliases: newAliasCache(30 * time.Second),
-		cfg:     cfg,
+		be:                be,
+		limiter:           auth.NewLimiter(nil, 15*time.Minute, 5, 10000),
+		aliases:           newAliasCache(30 * time.Second),
+		cfg:               cfg,
+		shareLimiter:      auth.NewLimiter(nil, time.Minute, 120, 10000),
+		shareWriteTimeout: 10 * time.Second,
 	}
+	s.shares, _ = newShareStore("")
 	s.auth, _ = auth.NewManager(auth.Options{
 		Password: cfg.AdminPassword,
 		TTL:      cfg.SessionTTL,
 	})
 	s.r = gin.New()
-	s.r.Use(gin.Logger(), gin.Recovery(), securityHeadersMiddleware())
+	// Log paths only: capabilities must never reach request logs via query strings.
+	s.r.Use(gin.LoggerWithFormatter(func(p gin.LogFormatterParams) string {
+		path := p.Request.URL.Path
+		if path == "/api/shared" || strings.HasPrefix(path, "/api/shared/") {
+			path = "/api/shared"
+		}
+		return fmt.Sprintf("[GIN] %s | %d | %v | %s | %s %s\n", p.TimeStamp.Format(time.RFC3339), p.StatusCode, p.Latency, p.ClientIP, p.Method, path)
+	}), gin.Recovery(), securityHeadersMiddleware(), s.shareWriteDeadlineMiddleware(), func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Next()
+	})
 	// 不信任任意代理头,登录限流使用真实连接 IP
 	_ = s.r.SetTrustedProxies(nil)
 	s.register()
@@ -80,7 +109,7 @@ func newWithBackend(be Backend, cfg Config) *Server {
 
 // Run 启动 HTTP 服务。
 func (s *Server) Run(addr string) error {
-	return s.r.Run(addr)
+	return (&http.Server{Addr: addr, Handler: s.r, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 2 * time.Minute}).ListenAndServe()
 }
 
 // Handler 返回底层 gin 引擎(便于测试)。
@@ -93,6 +122,9 @@ func (s *Server) register() {
 		// ===== 认证(公开) =====
 		api.POST("/auth/login", s.handleLogin)
 		api.GET("/auth/session", s.handleSession)
+		api.GET("/shared", s.sharedAccessMiddleware(), s.sharedMetadataHandler)
+		api.GET("/shared/inbox", s.sharedAccessMiddleware(), s.sharedInboxHandler)
+		api.GET("/shared/inbox/:uid", s.sharedAccessMiddleware(), s.sharedMessageHandler)
 
 		// ===== 受保护路由:统一 requireSession =====
 		authed := api.Group("")
@@ -121,6 +153,9 @@ func (s *Server) register() {
 
 			// ===== 别名管理 =====
 			authed.GET("/aliases", s.listAliasesHandler)
+			authed.GET("/aliases/:id/share", s.getAliasShareHandler)
+			authed.POST("/aliases/:id/share", csrfCheck(s.auth), s.createAliasShareHandler)
+			authed.DELETE("/aliases/:id/share", csrfCheck(s.auth), s.deleteAliasShareHandler)
 			authed.POST("/aliases/:id/deactivate", csrfCheck(s.auth), s.deactivateAliasHandler)
 			authed.POST("/aliases/:id/reactivate", csrfCheck(s.auth), s.reactivateAliasHandler)
 			authed.DELETE("/aliases/:id", csrfCheck(s.auth), s.deleteAliasHandler)
@@ -132,6 +167,10 @@ func (s *Server) register() {
 	// API 404 返回 JSON,绝不让 NoRoute 把拼错的 API 路径变成 HTML
 	s.r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			if c.Request.URL.Path == "/api/shared" || strings.HasPrefix(c.Request.URL.Path, "/api/shared/") {
+				backendFail(c, shareUnavailableError())
+				return
+			}
 			failCode(c, http.StatusNotFound, "VALIDATION_ERROR", "接口不存在")
 			return
 		}

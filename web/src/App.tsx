@@ -8,6 +8,7 @@ import AccountsPage from './pages/AccountsPage'
 import AliasesPage from './pages/AliasesPage'
 import InboxPage from './pages/InboxPage'
 import HelpPage from './pages/HelpPage'
+import SharedMailboxPage from './pages/SharedMailboxPage'
 
 function ProtectedLayout() {
   const { status } = useAuth()
@@ -18,6 +19,19 @@ function ProtectedLayout() {
     return <Navigate to="/login" replace />
   }
   return <AppShell />
+}
+
+function AdminRoutes() {
+  return <AuthProvider><Routes>
+    <Route path="/login" element={<LoginPage />} />
+    <Route element={<ProtectedLayout />}>
+      <Route path="/accounts" element={<AccountsPage />} />
+      <Route path="/aliases" element={<AliasesPage />} />
+      <Route path="/inbox" element={<InboxPage />} />
+      <Route path="/help" element={<HelpPage />} />
+      <Route path="*" element={<Navigate to="/inbox" replace />} />
+    </Route>
+  </Routes></AuthProvider>
 }
 
 export default function App() {
@@ -31,20 +45,12 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <AuthProvider>
         <ToastProvider>
           <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route element={<ProtectedLayout />}>
-              <Route path="/accounts" element={<AccountsPage />} />
-              <Route path="/aliases" element={<AliasesPage />} />
-              <Route path="/inbox" element={<InboxPage />} />
-              <Route path="/help" element={<HelpPage />} />
-              <Route path="*" element={<Navigate to="/inbox" replace />} />
-            </Route>
+            <Route path="/share" element={<SharedMailboxPage />} />
+            <Route path="*" element={<AdminRoutes />} />
           </Routes>
         </ToastProvider>
-      </AuthProvider>
     </BrowserRouter>
   )
 }

@@ -25,11 +25,37 @@ HTTP JSON API，所有接口返回统一格式：
 
 **安全约定：**
 
-- 除 `POST /api/auth/login` 与 `GET /api/auth/session` 外，所有 `/api` 接口都需要管理员会话
+- 除认证端点与独立 Bearer 认证的客户只读 `/api/shared` 端点外，所有 `/api` 接口都需要管理员会话
 - 非 GET/HEAD/OPTIONS 请求必须携带 `X-CSRF-Token` 请求头
 - 会话 Cookie：`hme_session`，`Path=/`、`HttpOnly`、`SameSite=Strict`；TLS 部署时设置 `ICLOUD_HME_SECURE_COOKIE=true` 启用 `Secure`
 - 任何账号响应**绝不包含** `cookies`、`app_password`、`proxy` 字段（代理只暴露 `has_proxy` 布尔值）
 - 用户可见错误消息不拼接上游响应体或秘密
+
+---
+
+## 邮箱分发
+
+管理员在隐藏邮箱行内生成、终止或重新生成链接。所有管理请求需要管理员会话；POST/DELETE 还必须有 CSRF。
+
+| 请求 | 参数 | 响应 data |
+|---|---|---|
+| `GET /api/aliases/:id/share` | query `account_id` | `{active, created_at?}` |
+| `POST /api/aliases/:id/share` | JSON `{account_id}` | `{active:true, created_at, token}` |
+| `DELETE /api/aliases/:id/share` | JSON `{account_id}` | `{active:false}` |
+
+`:id` 是当前账号的 `anonymousId`。每次 POST 生成全新 token 并废弃旧 token，开始时间重新计算。token 只在生成响应出现，不回显、不明文保存。
+
+客户页面地址为 `/share#TOKEN`，无需管理员登录。URL 片段不会发送给服务器；客户 API 使用 `Authorization: Bearer TOKEN`，不使用管理员 Cookie。
+
+| 客户只读请求 | 允许的 query | 响应 data |
+|---|---|---|
+| `GET /api/shared` | 无 | `{email, created_at}` |
+| `GET /api/shared/inbox` | `page`、`page_size`、`q`（主题） | `{email,created_at,count,total,page,page_size,messages}` |
+| `GET /api/shared/inbox/:uid` | 无 | 完整邮件 DTO |
+
+客户无写接口，不接受 `account_id`、`alias`、时间起点等权限参数。列表、计数和详情均按服务端 grant 中的单别名、UIDVALIDITY、UID 下限、服务器接收时间严格验证，历史邮件不能通过猜 UID 读取。无效/终止/替换 token 返回 `404 SHARE_UNAVAILABLE`，越界或不存在的邮件返回 `404 MESSAGE_NOT_FOUND`。响应 `Cache-Control: no-store`，公共入口有请求限流。持久化失败返回 `500 PERSISTENCE_ERROR`，不会报告生成或终止成功。
+
+暂时无法验证上游时返回 `503 UPSTREAM_FAILURE`，关闭本次读取但保留分发记录，恢复后原链接可重试。正文在归属验证后以限量 `BODY.PEEK` 下载，达到读取上限时按现有邮件 DTO 标记 `body_truncated`，不修改上游已读状态。
 
 ---
 

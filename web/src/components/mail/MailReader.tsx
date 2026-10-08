@@ -21,7 +21,7 @@ interface MailReaderProps {
   onPrevious: () => void
   onNext: () => void
   onRetry: () => void
-  onDelete: () => void
+  onDelete?: () => void
 }
 
 export default function MailReader({ message, detail, loading, error, isImap, index, count, focused, onFocusChange, onBack, onPrevious, onNext, onRetry, onDelete }: MailReaderProps) {
@@ -47,7 +47,7 @@ export default function MailReader({ message, detail, loading, error, isImap, in
         </div>
         <div className="reader-tools">
           <button className="icon-button ghost" aria-label={focused ? '退出专注阅读' : '专注阅读'} title={focused ? '退出专注阅读' : '专注阅读'} aria-pressed={focused} onClick={onFocusChange}>{focused ? <IconCollapse size={17} /> : <IconExpand size={17} />}</button>
-          {isImap && <button className="icon-button reader-delete" aria-label="删除邮件" title="删除邮件" onClick={onDelete}><IconTrash size={17} /></button>}
+          {isImap && onDelete && <button className="icon-button reader-delete" aria-label="删除邮件" title="删除邮件" onClick={onDelete}><IconTrash size={17} /></button>}
         </div>
       </div>
       <header className="mail-reader-header">

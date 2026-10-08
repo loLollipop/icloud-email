@@ -22,21 +22,22 @@ import (
 
 // Account 描述一个 iCloud 账号。
 type Account struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	RealEmail     string            `json:"real_email"`
-	ICloudEmail   string            `json:"icloud_email"`
-	Cookies       map[string]string `json:"cookies"`
-	Host          string            `json:"host"`
-	Proxy         string            `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
-	AppPassword   string            `json:"app_password,omitempty"`
-	Mailbox       *MailboxConfig    `json:"mailbox,omitempty"`
-	Status        string            `json:"status"` // active / error
-	AliasTotal    int               `json:"alias_total"`
-	AliasActive   int               `json:"alias_active"`
-	LastValidated string            `json:"last_validated"`
-	LastError     string            `json:"last_error,omitempty"`
-	CreatedAt     string            `json:"created_at"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	RealEmail      string            `json:"real_email"`
+	ICloudEmail    string            `json:"icloud_email"`
+	Cookies        map[string]string `json:"cookies"`
+	Host           string            `json:"host"`
+	Proxy          string            `json:"proxy,omitempty"` // HTTP/SOCKS5 代理
+	AppPassword    string            `json:"app_password,omitempty"`
+	Mailbox        *MailboxConfig    `json:"mailbox,omitempty"`
+	MailboxVersion string            `json:"mailbox_version,omitempty"`
+	Status         string            `json:"status"` // active / error
+	AliasTotal     int               `json:"alias_total"`
+	AliasActive    int               `json:"alias_active"`
+	LastValidated  string            `json:"last_validated"`
+	LastError      string            `json:"last_error,omitempty"`
+	CreatedAt      string            `json:"created_at"`
 }
 
 // MailboxConfig describes an external mailbox used to receive forwarded mail.
@@ -157,6 +158,9 @@ func copyAccount(acc *Account) *Account {
 	return &cp
 }
 
+// DataDirectory returns the directory used for production persistence.
+func (m *Manager) DataDirectory() string { return m.dataDir }
+
 // NewManager 创建管理器。dataDir 用于存放 accounts.json。
 func NewManager(dataDir string) (*Manager, error) {
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -204,6 +208,17 @@ func (m *Manager) Reload() error {
 
 	m.mu.Lock()
 	if accounts != nil {
+		for id, next := range accounts {
+			if old := m.accounts[id]; old != nil {
+				if mailboxConfiguration(old) != mailboxConfiguration(next) {
+					next.MailboxVersion = uuid.NewString()
+				} else {
+					next.MailboxVersion = old.MailboxVersion
+				}
+			} else {
+				next.MailboxVersion = uuid.NewString()
+			}
+		}
 		// Persist the snapshot while the old in-memory state is still available.
 		// This both repairs any stale writeback from an operation that Reload had
 		// to wait for and lets a write failure leave memory and the pool untouched.
@@ -529,6 +544,9 @@ func (m *Manager) UpdateMetadata(id string, input UpdateAccountInput) (Summary, 
 		return Summary{}, fmt.Errorf("账号不存在: %s", id)
 	}
 	mailConfigChanged := email != nil && acc.ICloudEmail != *email
+	if mailConfigChanged {
+		acc.MailboxVersion = uuid.NewString()
+	}
 	if name != nil {
 		acc.Name = *name
 	}
@@ -606,6 +624,26 @@ func (m *Manager) GetAccount(id string) (*Account, bool) {
 		return nil, false
 	}
 	return copyAccount(acc), true
+}
+
+// WithMailboxConfiguration validates a sharing generation and holds the
+// account lifecycle/read guard until commit returns. A successful configuration
+// update or removal therefore cannot precede delivery of an old response.
+// commit must not reenter account operations or perform upstream queries.
+func (m *Manager) WithMailboxConfiguration(id, version string, commit func() error) error {
+	unlockAccount := m.lockAccountRead(id)
+	defer unlockAccount()
+	m.mu.RLock()
+	acc, exists := m.accounts[id]
+	valid := exists && acc.MailboxVersion == version
+	m.mu.RUnlock()
+	if !valid {
+		return mail.ErrShareIdentityChanged
+	}
+	if commit != nil {
+		return commit()
+	}
+	return nil
 }
 
 // ListAccounts 返回所有账号的深拷贝(脱敏,不含 Cookies),按活跃状态排序。
@@ -815,8 +853,11 @@ func (m *Manager) HMEClientWithPassword(id, password string, otpProvider hme.OTP
 			cur.ICloudEmail = deriveICloudEmail(info)
 		}
 	}
-	saveErr := m.save()
 	mailConfigChanged := cur.RealEmail != oldRealEmail || cur.ICloudEmail != oldICloudEmail
+	if mailConfigChanged {
+		cur.MailboxVersion = uuid.NewString()
+	}
+	saveErr := m.save()
 	m.mu.Unlock()
 	if mailConfigChanged && m.imapPool != nil {
 		m.imapPool.Drop(id)
@@ -933,6 +974,7 @@ func (m *Manager) SetMailbox(id string, config MailboxConfig) error {
 		return fmt.Errorf("账号不存在: %s", id)
 	}
 	acc.Mailbox = &config
+	acc.MailboxVersion = uuid.NewString()
 	saveErr := m.save()
 	m.mu.Unlock()
 	if m.imapPool != nil {
@@ -1007,6 +1049,7 @@ func (m *Manager) SetAppPassword(id, icloudEmail, appPassword string) error {
 	}
 	acc.ICloudEmail = icloudEmail
 	acc.AppPassword = appPassword
+	acc.MailboxVersion = uuid.NewString()
 	saveErr := m.save()
 	m.mu.Unlock()
 	if m.imapPool != nil {
@@ -1137,8 +1180,11 @@ func (m *Manager) updateCookies(id string, cookies map[string]string, validate c
 	if cur.ICloudEmail == "" {
 		cur.ICloudEmail = snap.ICloudEmail
 	}
-	saveErr := m.save()
 	mailConfigChanged := cur.RealEmail != oldRealEmail || cur.ICloudEmail != oldICloudEmail
+	if mailConfigChanged {
+		cur.MailboxVersion = uuid.NewString()
+	}
+	saveErr := m.save()
 	m.mu.Unlock()
 	if mailConfigChanged && m.imapPool != nil {
 		m.imapPool.Drop(id)
@@ -1150,6 +1196,12 @@ func (m *Manager) updateCookies(id string, cookies map[string]string, validate c
 }
 
 // ---- 辅助函数 ----
+
+// mailboxConfiguration is used only in memory to detect changed reload targets.
+func mailboxConfiguration(acc *Account) string {
+	raw, _ := json.Marshal([]any{acc.RealEmail, acc.ICloudEmail, acc.AppPassword, acc.Mailbox})
+	return string(raw)
+}
 
 // deriveICloudEmail 从账号身份推导 iCloud 邮箱地址(用于 IMAP 登录)。
 //

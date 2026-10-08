@@ -14,6 +14,7 @@ import {
 import AsyncState from '../components/AsyncState'
 import CreateAliasDialog from '../components/CreateAliasDialog'
 import ConfirmDialog from '../components/ConfirmDialog'
+import ShareMailboxDialog from '../components/ShareMailboxDialog'
 import Pagination from '../components/Pagination'
 import { useToast } from '../components/ToastProvider'
 import { copyText } from '../utils/clipboard'
@@ -27,6 +28,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSearch,
+  IconShare,
   IconTrash,
 } from '../components/icons'
 
@@ -90,6 +92,7 @@ export default function AliasesPage() {
   const [filter, setFilter] = useState<'all' | 'active' | 'inactive'>('all')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
   const [createOpen, setCreateOpen] = useState(false)
+  const [shareFor, setShareFor] = useState<{ accountId: string; alias: Alias } | null>(null)
   const [confirm, setConfirm] = useState<{
     type: 'deactivate' | 'reactivate' | 'delete'
     alias: Alias
@@ -422,6 +425,8 @@ export default function AliasesPage() {
                         <IconInbox size={14} />
                         收件箱
                       </Link>
+                      <button type="button" disabled={busy} aria-label={`分发邮箱 · ${alias.email}`} title="管理客户只读链接"
+                        onClick={() => setShareFor({ accountId, alias })}><IconShare size={14} />分发</button>
                       <span className="alias-secondary-actions">
                         {alias.active ? (
                           <button
@@ -471,6 +476,8 @@ export default function AliasesPage() {
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
+
+      {shareFor && <ShareMailboxDialog key={`${shareFor.accountId}:${shareFor.alias.anonymousId}`} accountId={shareFor.accountId} alias={shareFor.alias} onClose={() => setShareFor(null)} />}
 
       {confirm && (
         <ConfirmDialog

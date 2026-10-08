@@ -16,6 +16,19 @@
 - ✅ **多账号管理** — 支持多个 iCloud 账号并行管理
 - ✅ **双认证模式** — Cookie 用于别名管理，App Password 用于 IMAP 读信
 - ✅ **安全模型** — 单管理员会话、CSRF 校验、登录限流、响应脱敏
+- ✅ **邮箱分发** — 单个隐藏邮箱的可撤销只读链接；客户无需登录，只能查看链接生成后收到的新邮件
+
+## 分发邮箱给客户
+
+在「隐藏邮箱」每行点击「分发」→「生成分发链接」，复制链接给客户即可。客户只能搜索主题、查看列表和阅读正文，没有删除、编辑、账号或别名管理权限。
+
+- 仅开放生成链接后收到的新邮件，管理员仍可查看全部历史。
+- 「终止分发」使当前链接失效；「重新生成」也会废弃旧链接，并重新计算新邮件起点。
+- 链接只在生成时显示，请自行保存；丢失可重新生成。链接即访问凭证，任何拿到链接的人都能读取对应邮箱的新邮件和验证码，请勿公开发布。
+- 分发记录保存在数据目录的 `shares.json`，需与账号数据一起备份。服务器重启不会恢复已撤销链接。改接收件邮箱或邮箱身份变化时需重新生成。
+- 邮件边界按 IMAP UID 和服务器接收时间双重校验，不使用可伪造的发件日期；同一秒边界的邮件会保守隐藏。
+- 上游短暂故障时暂停读取，恢复后原链接可重试，不会误终止分发；超大邮件按读取上限显示截断提示。
+- 终止会阻止后续读取，客户页面会定期检测并清空；已被客户复制、截图或下载的内容无法收回。
 
 ## 快速开始
 
@@ -80,7 +93,7 @@ go build -o icloud-hme .
 
 ### 2. 安全配置（必读）
 
-管理界面与 API 均需要管理员登录，升级后所有 API 都必须先通过 `POST /api/auth/login` 获取会话：
+管理界面与管理 API 需要管理员登录，先通过 `POST /api/auth/login` 获取会话；客户只读接口 `/api/shared` 使用独立分发链接认证：
 
 | 环境变量 | 说明 | 默认 |
 |---|---|---|
@@ -89,7 +102,7 @@ go build -o icloud-hme .
 | `ICLOUD_HME_SECURE_COOKIE` | 通过 TLS 反向代理部署时设为 `true` | `false` |
 
 > **Breaking Change（v0.3+）**：升级后未设置 `ICLOUD_HME_ADMIN_PASSWORD` 将拒绝启动；
-> 原有匿名 API 调用将收到 `401 AUTH_REQUIRED`。管理员会话只存内存，进程重启即失效。
+> 原有匿名管理 API 调用将收到 `401 AUTH_REQUIRED`。管理员会话只存内存，进程重启即失效；分发链接独立持久化。
 
 ### 3. 配置账号
 
@@ -658,6 +671,10 @@ go build -o icloud-hme .
 | `ICLOUD_HME_SESSION_TTL` | Session TTL | `12h` (range `15m`–`168h`) |
 | `ICLOUD_HME_SECURE_COOKIE` | Set `true` when deployed behind TLS | `false` |
 
-> **Breaking change (v0.3+)**: without `ICLOUD_HME_ADMIN_PASSWORD` the server refuses to start; all API endpoints now require login (`401 AUTH_REQUIRED`). Admin sessions are in-memory only and are lost on restart.
+> **Breaking change (v0.3+)**: without `ICLOUD_HME_ADMIN_PASSWORD` the server refuses to start; administrator API endpoints require login (`401 AUTH_REQUIRED`). Customer read-only `/api/shared` endpoints require an independent sharing token. Admin sessions are in-memory only and are lost on restart; sharing grants and revocations persist in `data/shares.json`.
+
+### Customer mailbox sharing
+
+Use **Distribute** on a hidden-mailbox row to generate a read-only link. Customers can search subjects and read only that alias's messages received after link generation. Revoking or regenerating permanently invalidates the previous link; regeneration starts a new mail boundary. Copy and save the link when generated (it is not shown again). Treat it as a credential, including access to verification codes. Back up `shares.json` with account data. Mailbox identity changes require a new link. Previously copied or captured content cannot be recalled.
 
 Create `data/accounts.json` (see `accounts.json.template`) and start the server (default port `:8081`). Open `http://localhost:8081` to use the management UI. Full API contract: [API.md](API.md).
