@@ -18,6 +18,7 @@
 //	ICLOUD_HME_ADMIN_PASSWORD      管理员密码,至少 8 字符(进程启动后从环境清除)
 //	ICLOUD_HME_SESSION_TTL         会话有效期,默认 12h,范围 15m-168h
 //	ICLOUD_HME_SECURE_COOKIE       TLS 反向代理部署时设为 true
+//	ICLOUD_HME_TRUSTED_PROXIES     可信反代 IP/CIDR，逗号分隔，默认 127.0.0.1,::1
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"icloud-hme/internal/account"
@@ -47,6 +49,13 @@ func main() {
 		log.Fatalf("ICLOUD_HME_SESSION_TTL 无效: %v", err)
 	}
 	secureCookie := os.Getenv("ICLOUD_HME_SECURE_COOKIE") == "true"
+	var trustedProxies []string
+	if raw := strings.TrimSpace(os.Getenv("ICLOUD_HME_TRUSTED_PROXIES")); raw != "" {
+		trustedProxies = strings.Split(raw, ",")
+		for i := range trustedProxies {
+			trustedProxies[i] = strings.TrimSpace(trustedProxies[i])
+		}
+	}
 
 	log.Printf("iCloud Hide My Email 服务启动 addr=%s", *addr)
 
@@ -64,11 +73,12 @@ func main() {
 	log.Printf("账号加载完成 count=%d data_dir=%s", count, abs)
 
 	srv, err := server.New(mgr, server.Config{
-		Debug:         *debug,
-		AdminPassword: adminPassword,
-		SessionTTL:    sessionTTL,
-		SecureCookie:  secureCookie,
-		DataDir:       abs,
+		Debug:          *debug,
+		AdminPassword:  adminPassword,
+		SessionTTL:     sessionTTL,
+		SecureCookie:   secureCookie,
+		DataDir:        abs,
+		TrustedProxies: trustedProxies,
 	})
 	if err != nil {
 		log.Fatalf("初始化服务失败: %v", err)

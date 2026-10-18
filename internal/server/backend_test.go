@@ -241,6 +241,15 @@ func TestManagerBackendRemoveAccountMapsPersistenceFailure(t *testing.T) {
 	}
 }
 
+func newServerForTest(t *testing.T, be Backend, cfg Config) *Server {
+	t.Helper()
+	s, err := newWithBackend(be, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 // newTestServer 构造带固定密码与 fake backend 的测试 Server。
 func newTestServer(f *fakeBackend) (*Server, *httptest.Server) {
 	cfg := Config{
@@ -248,7 +257,10 @@ func newTestServer(f *fakeBackend) (*Server, *httptest.Server) {
 		AdminPassword: "admin-pass-2026-strong",
 		SessionTTL:    12 * time.Hour,
 	}
-	s := newWithBackend(f, cfg)
+	s, err := newWithBackend(f, cfg)
+	if err != nil {
+		panic(err) // 测试辅助函数仅使用上方固定的合法配置。
+	}
 	ts := httptest.NewServer(s.Handler())
 	return s, ts
 }

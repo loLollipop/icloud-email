@@ -34,6 +34,8 @@ type Config struct {
 	SessionTTL    time.Duration
 	SecureCookie  bool
 	DataDir       string
+	// TrustedProxies 仅信任明确指定的反代 IP/CIDR；nil 默认信任 IPv4/IPv6 回环地址。
+	TrustedProxies []string
 }
 
 // Server 封装 Gin 引擎、账号后端与认证。
@@ -64,13 +66,16 @@ func New(mgr *account.Manager, cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := newWithBackend(&managerBackend{mgr: mgr}, cfg)
+	s, err := newWithBackend(&managerBackend{mgr: mgr}, cfg)
+	if err != nil {
+		return nil, err
+	}
 	s.shares = shares
 	return s, nil
 }
 
 // newWithBackend 创建 Server 并注入 Backend(测试使用内存 fake)。
-func newWithBackend(be Backend, cfg Config) *Server {
+func newWithBackend(be Backend, cfg Config) (*Server, error) {
 	if !cfg.Debug {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -101,10 +106,16 @@ func newWithBackend(be Backend, cfg Config) *Server {
 		}
 		c.Next()
 	})
-	// 不信任任意代理头,登录限流使用真实连接 IP
-	_ = s.r.SetTrustedProxies(nil)
+	// 仅接受可信反代转发的客户端 IP，避免共用反代 IP 限流或被外部伪造头绕过。
+	trustedProxies := cfg.TrustedProxies
+	if trustedProxies == nil {
+		trustedProxies = []string{"127.0.0.1", "::1"}
+	}
+	if err := s.r.SetTrustedProxies(trustedProxies); err != nil {
+		return nil, fmt.Errorf("受信任代理配置无效: %w", err)
+	}
 	s.register()
-	return s
+	return s, nil
 }
 
 // Run 启动 HTTP 服务。
