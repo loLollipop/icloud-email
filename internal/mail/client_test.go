@@ -611,24 +611,36 @@ func TestSearchByRecipientsSearchesFullInboxAndPaginatesVerifiedMatches(t *testi
 func TestSearchByRecipientsEmptyResultUsesFirstPageAndNonNilMessages(t *testing.T) {
 	useIMAPTimeouts(t, time.Second, time.Second)
 	ln, serverTLS, clientTLS := newTestTLSListener(t)
+	release := make(chan struct{})
 	serverDone := make(chan error, 1)
-	go serveEmptySearch(ln, serverTLS, serverDone)
+	var releaseOnce sync.Once
+	stopServer := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		stopServer()
+		_ = ln.Close()
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				t.Errorf("empty search test server: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("empty search test server did not stop")
+		}
+	})
+	go serveEmptySearch(ln, serverTLS, release, serverDone)
 	c := newTestClient(t, ln, clientTLS)
 	if err := c.Connect(); err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+	t.Cleanup(c.forceClose)
 	result, err := c.SearchByRecipients([]string{"alias@icloud.com"}, 9, 20, "missing", "subject", 0)
-	c.forceClose()
-	_ = ln.Close()
 	if err != nil {
 		t.Fatalf("SearchByRecipients: %v", err)
 	}
 	if result.Total != 0 || result.Page != 1 || result.PageSize != 20 || result.Messages == nil || len(result.Messages) != 0 {
 		t.Fatalf("empty result = %#v", result)
 	}
-	if serverErr := <-serverDone; serverErr != nil {
-		t.Fatal(serverErr)
-	}
+	stopServer()
 }
 
 func TestSearchByRecipientsFailsClosedOnSearchOrEnvelopeFetchError(t *testing.T) {
@@ -908,7 +920,7 @@ func servePartialSearchPreview(ln net.Listener, serverTLS *tls.Config, done chan
 	done <- nil
 }
 
-func serveEmptySearch(ln net.Listener, serverTLS *tls.Config, done chan<- error) {
+func serveEmptySearch(ln net.Listener, serverTLS *tls.Config, release <-chan struct{}, done chan<- error) {
 	raw, err := ln.Accept()
 	if err != nil {
 		done <- err
@@ -947,8 +959,13 @@ func serveEmptySearch(ln net.Listener, serverTLS *tls.Config, done chan<- error)
 		done <- fmt.Errorf("received %q, want SUBJECT search", search)
 		return
 	}
-	_, err = conn.Write([]byte("* SEARCH\r\n" + imapTag(search) + " OK SEARCH completed\r\n"))
-	done <- err
+	if _, err = conn.Write([]byte("* SEARCH\r\n" + imapTag(search) + " OK SEARCH completed\r\n")); err != nil {
+		done <- err
+		return
+	}
+	// 客户端处理完成前保持连接，避免 EOF 与 tagged OK 同时就绪而随机报连接关闭。
+	<-release
+	done <- nil
 }
 
 func searchEnvelopeResponse(uid int, mailbox, host string) string {
