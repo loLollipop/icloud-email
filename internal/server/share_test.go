@@ -106,7 +106,7 @@ func (f *fakeSharingBackend) GetSharedFull(id string, boundary mail.ShareBoundar
 
 func newSharingTest(t *testing.T, f *fakeSharingBackend, dir string) (*Server, *httptest.Server, string, string) {
 	t.Helper()
-	s := newWithBackend(f, Config{AdminPassword: "admin-pass-2026-strong", DataDir: dir})
+	s := newServerForTest(t, f, Config{AdminPassword: "admin-pass-2026-strong", DataDir: dir})
 	var err error
 	s.shares, err = newShareStore(dir)
 	if err != nil {
@@ -430,7 +430,7 @@ func TestSharedResponseRejectsConfigurationSwitchAfterSnapshotCheck(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	s := newWithBackend(b, Config{AdminPassword: "admin-pass-2026-strong"})
+	s := newServerForTest(t, b, Config{AdminPassword: "admin-pass-2026-strong"})
 	grant := &shareGrant{AccountID: summary.ID, AliasID: "one", Email: "one@icloud.com", Boundary: f.boundary}
 	grant.Boundary.ConfigurationVersion = acc.MailboxVersion
 	s.shares.grants[shareKey(grant.AccountID, grant.AliasID)] = grant
@@ -448,7 +448,7 @@ func TestShareRequestLogsDoNotRecordQueryCapabilities(t *testing.T) {
 	previous := gin.DefaultWriter
 	gin.DefaultWriter = &output
 	defer func() { gin.DefaultWriter = previous }()
-	s := newWithBackend(sharingFake(), Config{AdminPassword: "admin-pass-2026-strong"})
+	s := newServerForTest(t, sharingFake(), Config{AdminPassword: "admin-pass-2026-strong"})
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/shared?token=private-capability-value", nil)
 	req.Header.Set("Authorization", "Bearer also-private")

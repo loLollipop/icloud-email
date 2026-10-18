@@ -100,6 +100,11 @@ go build -o icloud-hme .
 | `ICLOUD_HME_ADMIN_PASSWORD` | 管理员密码，**必填**，至少 8 字符 | 无（缺失时拒绝启动） |
 | `ICLOUD_HME_SESSION_TTL` | 会话有效期 | `12h`（范围 `15m`–`168h`） |
 | `ICLOUD_HME_SECURE_COOKIE` | 通过 TLS 反向代理部署时设为 `true` | `false` |
+| `ICLOUD_HME_TRUSTED_PROXIES` | 可信反代 IP/CIDR，逗号分隔；只填写实际反代来源 | `127.0.0.1,::1` |
+
+登录限流按客户端 IP 独立计数。仅可信反代的 `X-Forwarded-For` / `X-Real-IP` 会用于识别客户端，直接访问者不能通过伪造这些头绕过限流。nginx 必须用 `$remote_addr` 设置 `X-Real-IP`，并用 `$proxy_add_x_forwarded_for` 设置 `X-Forwarded-For`；不要原样透传未经校验的客户端头。
+
+**宿主机 nginx → Docker 部署：** 应用看到的连接来源通常是 Docker 网关，不是回环地址。先执行 `docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' icloud-hme` 确认实际地址；例如输出 `172.19.0.1` 时，在 Compose 的 `.env` 中设置 `ICLOUD_HME_TRUSTED_PROXIES=127.0.0.1,::1,172.19.0.1`，再重建/更新应用容器。不要信任所有地址或整个私网；网关地址变动后需同步配置。应用端口仍应仅发布到宿主机 `127.0.0.1`。
 
 > **Breaking Change（v0.3+）**：升级后未设置 `ICLOUD_HME_ADMIN_PASSWORD` 将拒绝启动；
 > 原有匿名管理 API 调用将收到 `401 AUTH_REQUIRED`。管理员会话只存内存，进程重启即失效；分发链接独立持久化。
@@ -670,6 +675,9 @@ go build -o icloud-hme .
 | `ICLOUD_HME_ADMIN_PASSWORD` | Admin password, **required**, min 8 chars | none (refuses to start) |
 | `ICLOUD_HME_SESSION_TTL` | Session TTL | `12h` (range `15m`–`168h`) |
 | `ICLOUD_HME_SECURE_COOKIE` | Set `true` when deployed behind TLS | `false` |
+| `ICLOUD_HME_TRUSTED_PROXIES` | Comma-separated trusted proxy IPs/CIDRs; list only actual proxy peers | `127.0.0.1,::1` |
+
+Login limits are per client IP. Forwarding headers are accepted only from trusted peers. nginx must set `X-Real-IP` to `$remote_addr` and `X-Forwarded-For` to `$proxy_add_x_forwarded_for`, not pass unchecked client headers through. When nginx runs on the host and the app runs in Docker, inspect the actual gateway with `docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}' icloud-hme` and add that exact address to `ICLOUD_HME_TRUSTED_PROXIES` in Compose's `.env` before recreating the container. Keep the published port bound to host loopback; do not trust all IPs or entire private ranges. Update the allowlist if the gateway changes.
 
 > **Breaking change (v0.3+)**: without `ICLOUD_HME_ADMIN_PASSWORD` the server refuses to start; administrator API endpoints require login (`401 AUTH_REQUIRED`). Customer read-only `/api/shared` endpoints require an independent sharing token. Admin sessions are in-memory only and are lost on restart; sharing grants and revocations persist in `data/shares.json`.
 
